@@ -1,5 +1,6 @@
-//! UPF — User Plane Function core logic.
+// crates/midn-userplane/src/upf/mod.rs
+//! UPF subsystems.
 
 pub mod routing;
-pub mod tunnel;
 pub mod session;
+pub mod tunnel;
