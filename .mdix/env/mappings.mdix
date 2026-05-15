@@ -1,0 +1,23 @@
+@CONFIG(
+  version    -> "1.0.0"
+  features   -> "data"
+  debug_mode -> "off"
+)
+
+@DATA(
+  project_name   = "midn-core"
+  description    = "High-performance ECS-driven Private LTE/5G Core Network"
+  author         = "MidManStudio"
+  author_email   = "studio@mid-d-man.dev"
+  github_user    = "Mid-D-Man"
+  license        = "MIT"
+
+  // Runtime / toolchain versions
+  rust_toolchain = "stable"
+
+  // Organisation
+  org: name = "MidManStudio", url = "https://mid-d-man.github.io"
+
+  // Crate versions
+  versions: auth = "0.1.0", proto = "0.1.0", core = "0.1.0", userplane = "0.1.0"
+)
