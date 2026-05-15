@@ -1,0 +1,26 @@
+name: Generate project structure
+
+on:
+  workflow_dispatch:
+    inputs:
+      override_stubs:
+        description: 'Overwrite existing stub files (true/false)'
+        required: false
+        default: 'false'
+      dry_run:
+        description: 'Preview without writing (true/false)'
+        required: false
+        default: 'false'
+  push:
+    paths:
+      - '.mdix/**'
+
+jobs:
+  generate:
+    uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
+    permissions:
+      contents: write
+    with:
+      template:       '.mdix/project_structure/project_structure.mdix'
+      override_stubs: ${{ inputs.override_stubs || 'false' }}
+      dry_run:        ${{ inputs.dry_run || 'false' }}
