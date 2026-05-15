@@ -1,0 +1,228 @@
+// =============================================================================
+// MIDN CORE — PROJECT SCAFFOLD  ·  DixScript v1.0.0
+// =============================================================================
+// Generate: Actions → "Generate project structure" → Run workflow
+// Or local:  node bin/mdix-scaffold.js generate
+// NOTE: No .github files are included — manage workflows separately.
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "MidManStudio"
+  features   -> "quickfuncs,data"
+  debug_mode -> "off"
+)
+
+@QUICKFUNCS(
+  ~f<object>(name, ext) {
+    return {
+      name    = name
+      ext     = ext
+      content = ""
+    }
+  }
+
+  ~fc<object>(name, ext, content) {
+    return {
+      name    = name
+      ext     = ext
+      content = content
+    }
+  }
+
+  ~gitkeep<object>() {
+    return {
+      name    = ".gitkeep"
+      ext     = ""
+      content = ""
+    }
+  }
+
+  ~hidden<object>(segment) {
+    return {
+      segment = segment
+    }
+  }
+)
+
+@DATA(
+  project_name = "midn-core"
+  description  = "High-performance ECS-driven Private LTE/5G Core Network"
+  author       = "MidManStudio"
+
+  hidden_dirs::
+    hidden("vscode")
+
+  // ── IDE ──────────────────────────────────────────────────────────────────────
+  vscode::
+    fc("extensions", "json",
+      "{\n  \"recommendations\": [\n    \"rust-lang.rust-analyzer\",\n    \"vadimcn.vscode-lldb\",\n    \"tamasfe.even-better-toml\"\n  ]\n}\n")
+    fc("settings", "json",
+      "{\n  \"rust-analyzer.checkOnSave.command\": \"clippy\",\n  \"editor.formatOnSave\": true\n}\n")
+
+  // ── Workspace root ────────────────────────────────────────────────────────────
+  root::
+    fc("Cargo", "toml",
+      "[workspace]\nmembers = [\n    \"crates/midn-auth\",\n    \"crates/midn-proto\",\n    \"crates/midn-core\",\n    \"crates/midn-userplane\",\n    \"crates/midn-userplane-ebpf\",\n]\nresolver = \"2\"\n\n# mid-math: uncomment one option\n# [workspace.dependencies]\n# mid-math = { git = \"https://github.com/Mid-D-Man/mid-engine\", branch = \"main\" }\n# mid-math = { path = \"../mid-engine/crates/mid-math\" }\n\n[profile.release]\nopt-level     = 3\nlto           = true\ncodegen-units = 1\nstrip         = true\ndebug         = false\n\n[profile.dev]\nopt-level = 0\ndebug     = true\n\n[profile.release-with-debug]\ninherits = \"release\"\ndebug    = true\nstrip    = false\n")
+    fc("rust-toolchain", "toml",
+      "[toolchain]\nchannel    = \"stable\"\ncomponents = [\"rustfmt\", \"clippy\"]\ntargets    = [\n    \"x86_64-unknown-linux-gnu\",\n    \"aarch64-unknown-linux-gnu\",\n]\n")
+    fc(".gitignore", "",
+      "target/\ndist/\n.env\n*.log\n.DS_Store\n**/.DS_Store\n*.enc\n*.key\n*.o\n*.bpf\nperf.data\nflamegraph.svg\n")
+    fc("README", "md",
+      "# Midn Core\n\n> High-performance ECS-driven Private LTE/5G Core Network\n\nSee docs/ for architecture and phase guides.\n")
+    fc("project_manifest", "json",
+      "{\n  \"project_name\": \"Midn Core\",\n  \"version\": \"0.1.0-alpha\",\n  \"author\": \"MidManStudio\"\n}\n")
+
+  // ── crates/midn-auth ──────────────────────────────────────────────────────────
+  crates.midn-auth::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-auth\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nname = \"midn_auth\"\ncrate-type = [\"lib\", \"cdylib\", \"staticlib\"]\n\n[dependencies]\nzeroize  = { version = \"1.8\", features = [\"derive\"] }\nsubtle   = \"2.5\"\nrand     = { version = \"0.8\", features = [\"getrandom\"] }\nhex      = \"0.4\"\n\n[dev-dependencies]\ncriterion = { version = \"0.5\", features = [\"html_reports\"] }\n\n[[bench]]\nname    = \"auth_bench\"\nharness = false\n")
+
+  crates.midn-auth.src::
+    fc("lib", "rs",
+      "//! midn-auth — Subscriber authentication for LTE/5G\n//!\n//! Implements Milenage (3GPP TS 35.206) and TUAK (3GPP TS 35.231)\n//! authentication algorithms for the AKA (Authentication and Key Agreement)\n//! procedure.\n//!\n//! SECURITY: All secret material (Ki, OPc) is wrapped in Zeroize types.\n//! All comparisons use constant-time operations via the subtle crate.\n\npub mod milenage;\npub mod tuak;\npub mod keys;\npub mod ffi;\n\npub use keys::{AuthKey, AuthVector, OpCode, Plmn, Rand, Sqn};\npub use milenage::MilenageContext;\n")
+    fc("keys", "rs",
+      "//! Cryptographic key types for subscriber authentication.\n//!\n//! All secret types implement Zeroize so key material is wiped from\n//! memory when they go out of scope. Never store Ki in plain fields.\n\nuse zeroize::{Zeroize, ZeroizeOnDrop};\n\n/// 128-bit subscriber authentication key (Ki).\n/// Stored on the SIM and in the HSS/UDM. NEVER transmitted.\n#[derive(Clone, Zeroize, ZeroizeOnDrop)]\npub struct AuthKey(pub [u8; 16]);\n\n/// 128-bit Operator Code variant (OPc).\n/// Derived from OP and Ki. Stored in the HSS.\n#[derive(Clone, Zeroize, ZeroizeOnDrop)]\npub struct OpCode(pub [u8; 16]);\n\n/// 128-bit random challenge (RAND). Generated per-authentication.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct Rand(pub [u8; 16]);\n\n/// 48-bit Sequence Number (SQN). Monotonically increasing.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]\npub struct Sqn(pub u64); // top 48 bits used\n\n/// PLMN identity (MCC + MNC, 3 bytes).\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct Plmn(pub [u8; 3]);\n\n/// Authentication vector output from Milenage/TUAK.\n/// RES, CK, IK, AUTN as defined in 3GPP TS 33.401.\n#[derive(Zeroize, ZeroizeOnDrop)]\npub struct AuthVector {\n    /// Expected response (sent to UE for comparison)\n    pub rand: Rand,\n    /// Network authentication token sent to UE\n    pub autn: [u8; 16],\n    /// Expected response from UE (32-bit for LTE)\n    pub xres: [u8; 8],\n    /// Cipher key\n    pub ck:   [u8; 16],\n    /// Integrity key\n    pub ik:   [u8; 16],\n}\n")
+    fc("milenage", "rs",
+      "//! Milenage algorithm — 3GPP TS 35.205 / 35.206\n//!\n//! Milenage is the default 3GPP authentication algorithm.\n//! It is built on AES-128 as a pseudorandom function.\n//!\n//! This implementation is constant-time for all comparisons\n//! and uses the `subtle` crate to prevent timing attacks.\n\nuse crate::keys::{AuthKey, AuthVector, OpCode, Rand, Sqn};\n// TODO Phase 1: Implement f1..f5* functions using AES-128 core\n// Reference: 3GPP TS 35.206 Section 4\n\npub struct MilenageContext {\n    ki:  AuthKey,\n    opc: OpCode,\n}\n\nimpl MilenageContext {\n    pub fn new(ki: AuthKey, opc: OpCode) -> Self {\n        Self { ki, opc }\n    }\n\n    /// Generate a full authentication vector for a subscriber attach.\n    /// Returns (RAND, AUTN, XRES, CK, IK).\n    pub fn generate_vector(&self, sqn: Sqn, plmn: &[u8; 3]) -> AuthVector {\n        let rand = Self::generate_rand();\n        // TODO: Implement f1 (MAC-A), f2 (RES), f3 (CK), f4 (IK), f5 (AK)\n        let _ = (&self.ki, &self.opc, sqn, plmn);\n        todo!(\"Milenage f1-f5 functions — Phase 1 target\")\n    }\n\n    fn generate_rand() -> Rand {\n        let mut bytes = [0u8; 16];\n        // TODO: use rand::RngCore::fill_bytes in implementation\n        Rand(bytes)\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    // 3GPP TS 35.207 test set 1 — official test vectors\n    // K  = 465b5ce8b199b49faa5f0a2ee238a6bc\n    // OP = cdc202d5123e20f62b6d676ac72cb318\n    // RAND = 23553cbe9637a89d218ae64dae47bf35\n    // SQN  = ff9bb4d0b607\n    // AMF  = b9b9\n    // Expected AUTN, XRES, CK, IK defined in spec\n    #[test]\n    #[ignore = \"Phase 1 implementation required\"]\n    fn test_set_1_official_vectors() {\n        // Validate against 3GPP TS 35.207 test set 1\n        todo!()\n    }\n}\n")
+    fc("tuak", "rs",
+      "//! TUAK algorithm — 3GPP TS 35.231 / 35.232\n//!\n//! TUAK is an alternative to Milenage, based on the Keccak (SHA-3) permutation.\n//! Provides larger key sizes (128 or 256-bit) and is quantum-resistant\n//! compared to AES-128-based Milenage.\n//!\n//! Priority 2 — implement after Milenage is stable and passing test vectors.\n// Auto-generated stub\n")
+    fc("ffi", "rs",
+      "//! C-compatible FFI exports for midn-auth.\n//!\n//! Allows calling the Milenage/TUAK authentication from C, C++,\n//! or any language with a C FFI (Unity, Unreal, Go, Python).\n// Auto-generated stub\n")
+
+  // ── crates/midn-proto ─────────────────────────────────────────────────────────
+  crates.midn-proto::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-proto\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nname = \"midn_proto\"\ncrate-type = [\"lib\", \"cdylib\", \"staticlib\"]\n\n[dependencies]\nmidn-auth = { path = \"../midn-auth\" }\npostcard  = { version = \"1.0\", features = [\"alloc\"] }\ntokio     = { version = \"1\", features = [\"net\", \"sync\", \"io-util\"] }\nbytes     = \"1.5\"\nthiserror = \"1.0\"\n\n[dev-dependencies]\ncriterion = { version = \"0.5\", features = [\"html_reports\"] }\n\n[[bench]]\nname    = \"proto_bench\"\nharness = false\n")
+
+  crates.midn-proto.src::
+    fc("lib", "rs",
+      "//! midn-proto — LTE/5G protocol stack\n//!\n//! Implements the signaling and data plane protocols:\n//!   NAS  — Non-Access Stratum (UE ↔ MME/AMF)\n//!   S1AP — eNodeB control plane interface (LTE)\n//!   NGAP — gNodeB control plane interface (5G NR)\n//!   GTP-U — User plane tunneling protocol\n\npub mod nas;\npub mod s1ap;\npub mod ngap;\npub mod gtp;\n\npub use nas::NasMessage;\npub use gtp::GtpuHeader;\n")
+
+  crates.midn-proto.src.nas::
+    fc("mod", "rs",
+      "//! NAS — Non-Access Stratum\n//!\n//! The signaling protocol between UE and MME (LTE) or AMF (5G).\n//! Handles Attach, Authentication, Security Mode, PDN Connectivity.\n\npub mod messages;\npub mod security;\n\npub use messages::NasMessage;\n")
+    fc("messages", "rs",
+      "//! NAS message types — 3GPP TS 24.301 (LTE) / 24.501 (5G)\n\n/// Top-level NAS message discriminant.\n#[derive(Debug, Clone, PartialEq, Eq)]\npub enum NasMessage {\n    /// UE → MME/AMF: initiate attach\n    AttachRequest(AttachRequest),\n    /// MME/AMF → UE: send RAND + AUTN\n    AuthenticationRequest(AuthenticationRequest),\n    /// UE → MME/AMF: send RES\n    AuthenticationResponse(AuthenticationResponse),\n    /// MME/AMF → UE: reject auth\n    AuthenticationReject,\n    /// MME/AMF → UE: activate NAS security\n    SecurityModeCommand(SecurityModeCommand),\n    /// UE → MME/AMF: confirm security mode\n    SecurityModeComplete,\n    /// MME/AMF → UE: assign IP + bearer\n    AttachAccept(AttachAccept),\n    /// UE → MME/AMF: confirm attach\n    AttachComplete,\n    /// Any → Any: detach\n    DetachRequest,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AttachRequest {\n    pub imsi:    Option<[u8; 8]>,\n    pub guti:    Option<[u8; 10]>,\n    pub ue_caps: u32,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AuthenticationRequest {\n    pub rand: [u8; 16],\n    pub autn: [u8; 16],\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AuthenticationResponse {\n    pub res: [u8; 8],\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct SecurityModeCommand {\n    pub selected_nas_cipher:    u8,\n    pub selected_nas_integrity: u8,\n}\n\n#[derive(Debug, Clone, PartialEq, Eq)]\npub struct AttachAccept {\n    pub guti:        [u8; 10],\n    pub apn:         heapless::String<64>,\n    pub ip_address:  [u8; 4],\n}\n")
+    fc("security", "rs",
+      "//! NAS security — ciphering and integrity protection.\n//!\n//! Algorithms: EEA0 (null), EEA1 (SNOW 3G), EEA2 (AES-CTR), EEA3 (ZUC)\n//!              EIA0 (null), EIA1 (SNOW 3G), EIA2 (AES-CMAC), EIA3 (ZUC)\n// Auto-generated stub — Phase 2\n")
+
+  crates.midn-proto.src.s1ap::
+    fc("mod", "rs",
+      "//! S1AP — S1 Application Protocol\n//!\n//! Control plane between eNodeB (LTE base station) and MME.\n//! Based on 3GPP TS 36.413. Uses ASN.1 PER encoding.\n\npub mod messages;\n\npub use messages::S1apMessage;\n")
+    fc("messages", "rs",
+      "//! S1AP message types — 3GPP TS 36.413\n\n#[derive(Debug, Clone)]\npub enum S1apMessage {\n    /// eNodeB → MME: UE initiates attach\n    InitialUeMessage(InitialUeMessageIe),\n    /// MME → eNodeB: forward NAS PDU\n    DownlinkNasTransport(DownlinkNasTransportIe),\n    /// eNodeB → MME: forward NAS PDU\n    UplinkNasTransport(UplinkNasTransportIe),\n    /// MME → eNodeB: establish E-RAB for data\n    InitialContextSetupRequest,\n    /// eNodeB → MME: E-RAB established\n    InitialContextSetupResponse,\n    /// Any: release UE context\n    UeContextRelease,\n}\n\n#[derive(Debug, Clone)]\npub struct InitialUeMessageIe {\n    pub enb_ue_s1ap_id: u32,\n    pub nas_pdu:        bytes::Bytes,\n    pub tai:            [u8; 5],\n}\n\n#[derive(Debug, Clone)]\npub struct DownlinkNasTransportIe {\n    pub mme_ue_s1ap_id: u32,\n    pub enb_ue_s1ap_id: u32,\n    pub nas_pdu:        bytes::Bytes,\n}\n\n#[derive(Debug, Clone)]\npub struct UplinkNasTransportIe {\n    pub mme_ue_s1ap_id: u32,\n    pub enb_ue_s1ap_id: u32,\n    pub nas_pdu:        bytes::Bytes,\n}\n")
+
+  crates.midn-proto.src.ngap::
+    fc("mod", "rs",
+      "//! NGAP — NG Application Protocol\n//!\n//! Control plane between gNodeB (5G NR) and AMF.\n//! Based on 3GPP TS 38.413.\n//! Priority 3 — implement after S1AP is stable.\n\npub mod messages;\n\npub use messages::NgapMessage;\n")
+    fc("messages", "rs",
+      "//! NGAP message types — 3GPP TS 38.413\n//! Auto-generated stub — Phase 2 (5G extension)\n\n#[derive(Debug, Clone)]\npub enum NgapMessage {\n    /// gNodeB → AMF: UE initiates registration\n    InitialUeMessage,\n    /// AMF → gNodeB: forward NAS PDU\n    DownlinkNasTransport,\n    /// gNodeB → AMF: forward NAS PDU\n    UplinkNasTransport,\n    /// AMF → gNodeB: establish PDU session\n    PduSessionResourceSetupRequest,\n    /// gNodeB → AMF: PDU session established\n    PduSessionResourceSetupResponse,\n}\n")
+
+  crates.midn-proto.src.gtp::
+    fc("mod", "rs",
+      "//! GTP-U — GPRS Tunneling Protocol (User Plane)\n//!\n//! GTP-U encapsulates user data in UDP tunnels between the eNodeB/gNodeB\n//! and the UPF/P-GW. Every data packet a subscriber sends/receives\n//! is wrapped in a GTP-U header.\n//!\n//! Protocol: UDP/IP, default port 2152.\n//! Reference: 3GPP TS 29.281\n//!\n//! Performance target: < 500 ns per packet parse (zero-copy)\n\npub mod header;\npub mod parser;\n\npub use header::GtpuHeader;\npub use parser::GtpuParser;\n")
+    fc("header", "rs",
+      "//! GTP-U header — 3GPP TS 29.281 Section 5\n//!\n//! Fixed 8-byte mandatory header, plus optional extension headers.\n//! Zero-copy design: the header is a view into the incoming UDP payload.\n\n/// GTP-U mandatory header (8 bytes).\n/// Layout matches the wire format directly — no reordering.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[repr(C)]\npub struct GtpuHeader {\n    /// Flags: version (3b), PT (1b), reserved (1b), E (1b), S (1b), PN (1b)\n    pub flags:   u8,\n    /// Message type: 0xFF = G-PDU (data), 0x01 = Echo Request\n    pub msg_type: u8,\n    /// Total length of the GTP packet (big-endian)\n    pub length:  u16,\n    /// Tunnel Endpoint Identifier — identifies the GTP tunnel\n    pub teid:    u32,\n}\n\nimpl GtpuHeader {\n    pub const SIZE: usize = 8;\n    pub const MSG_GPDU: u8  = 0xFF;\n    pub const MSG_ECHO_REQ: u8 = 0x01;\n    pub const MSG_ECHO_RSP: u8 = 0x02;\n    pub const VERSION_1: u8 = 0b0010_0000;\n    pub const PT_GTP: u8    = 0b0001_0000;\n\n    /// Parse a GTP-U header from a byte slice. Zero-copy: no allocation.\n    ///\n    /// Returns the header and the remaining payload slice.\n    /// Returns None if the slice is shorter than 8 bytes.\n    #[inline]\n    pub fn parse(buf: &[u8]) -> Option<(Self, &[u8])> {\n        if buf.len() < Self::SIZE {\n            return None;\n        }\n        let hdr = Self {\n            flags:    buf[0],\n            msg_type: buf[1],\n            length:   u16::from_be_bytes([buf[2], buf[3]]),\n            teid:     u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]),\n        };\n        Some((hdr, &buf[Self::SIZE..]))\n    }\n\n    /// Returns true if this is a G-PDU (user data) packet.\n    #[inline(always)]\n    pub fn is_gpdu(self) -> bool { self.msg_type == Self::MSG_GPDU }\n\n    /// Returns true if extension headers are present (E flag).\n    #[inline(always)]\n    pub fn has_ext_hdr(self) -> bool { self.flags & 0x04 != 0 }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn parse_gpdu_header() {\n        // Construct a minimal G-PDU header for TEID 0xDEADBEEF\n        let buf = [\n            0x30, 0xFF,          // flags, msg_type\n            0x00, 0x20,          // length = 32\n            0xDE, 0xAD, 0xBE, 0xEF,  // TEID\n            1, 2, 3, 4,          // payload\n        ];\n        let (hdr, payload) = GtpuHeader::parse(&buf).unwrap();\n        assert_eq!(hdr.teid, 0xDEAD_BEEF);\n        assert!(hdr.is_gpdu());\n        assert_eq!(payload.len(), 4);\n    }\n\n    #[test]\n    fn parse_too_short_returns_none() {\n        assert!(GtpuHeader::parse(&[0x30, 0xFF, 0x00]).is_none());\n    }\n}\n")
+    fc("parser", "rs",
+      "//! High-level GTP-U parser — zero-copy, allocation-free.\n//!\n//! Extracts the TEID and payload from a raw UDP payload.\n//! Skips optional headers cleanly.\n\nuse crate::gtp::header::GtpuHeader;\n\n/// Result of parsing a UDP payload as a GTP-U packet.\n#[derive(Debug)]\npub struct GtpuPacket<'a> {\n    /// Parsed mandatory header.\n    pub header:  GtpuHeader,\n    /// The inner IP packet (or other payload).\n    pub payload: &'a [u8],\n}\n\npub struct GtpuParser;\n\nimpl GtpuParser {\n    /// Parse a raw UDP payload as a GTP-U packet.\n    /// Returns None if malformed or too short.\n    #[inline]\n    pub fn parse(udp_payload: &[u8]) -> Option<GtpuPacket<'_>> {\n        let (hdr, rest) = GtpuHeader::parse(udp_payload)?;\n        // Skip optional sequence/N-PDU/extension headers if flags are set\n        let payload_start = if hdr.flags & 0x07 != 0 {\n            // Sequence number (2) + N-PDU (1) + next ext hdr type (1) = 4 more bytes\n            if rest.len() < 4 { return None; }\n            &rest[4..]\n        } else {\n            rest\n        };\n        Some(GtpuPacket { header: hdr, payload: payload_start })\n    }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn parse_gpdu_no_ext() {\n        let buf = [\n            0x30, 0xFF, 0x00, 0x10,\n            0x00, 0x00, 0x00, 0x01,\n            0x45, 0x00, 0x00, 0x14,\n        ];\n        let pkt = GtpuParser::parse(&buf).unwrap();\n        assert_eq!(pkt.header.teid, 1);\n        assert_eq!(pkt.payload[0], 0x45); // IPv4 header start\n    }\n}\n")
+
+  // ── crates/midn-core ──────────────────────────────────────────────────────────
+  crates.midn-core::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-core\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nname = \"midn_core\"\ncrate-type = [\"lib\"]\n\n[dependencies]\nmidn-auth  = { path = \"../midn-auth\" }\nmidn-proto = { path = \"../midn-proto\" }\ntokio      = { version = \"1\", features = [\"full\"] }\nthiserror  = \"1.0\"\ntracing    = \"0.1\"\n# mid-math = { workspace = true }  # uncomment after configuring workspace dep\n\n[dev-dependencies]\ntokio-test = \"0.4\"\n")
+
+  crates.midn-core.src::
+    fc("lib", "rs",
+      "//! midn-core — Control Plane Orchestrator\n//!\n//! The MME/AMF state machine and ECS-based subscriber registry.\n//!\n//! Architecture:\n//!   ECS World    — all subscriber state as components\n//!   MME Systems  — process Attach, Detach, Handover\n//!   AMF Systems  — process Registration, Session Management (5G)\n//!\n//! The ECS pattern means subscriber state is cache-friendly SoA,\n//! enabling bulk operations at the performance level of mid-math.\n\npub mod ecs;\npub mod mme;\npub mod amf;\n\npub use ecs::world::CoreWorld;\npub use mme::Mme;\n")
+
+  crates.midn-core.src.ecs::
+    fc("mod", "rs",
+      "//! ECS — Entity Component System for subscriber state.\n//!\n//! Entities  = Subscribers (UEs)\n//! Components = IMSI, AuthState, SecurityContext, Session, Tunnel\n//! Systems    = Attach, Authenticate, Activate, Detach\n\npub mod components;\npub mod systems;\npub mod world;\npub mod registry;\n")
+    fc("components", "rs",
+      "//! ECS Components — subscriber state decomposed into data.\n//!\n//! Each component is cache-line conscious. Hot components\n//! (SessionState, TunnelState) are 64-byte aligned.\n\nuse zeroize::{Zeroize, ZeroizeOnDrop};\n\n/// Unique subscriber identity. 15-digit IMSI encoded as u64.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub struct ImsiComponent(pub u64);\n\n/// Authentication state of a subscriber.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum AuthState {\n    Unauthenticated,\n    Challenged { rand: [u8; 16], xres: [u8; 8] },\n    Authenticated,\n    Failed,\n}\n\n/// NAS security context — cipher + integrity keys.\n#[derive(Clone, Zeroize, ZeroizeOnDrop)]\n#[repr(C, align(64))]\npub struct SecurityContext {\n    pub ck:          [u8; 16],\n    pub ik:          [u8; 16],\n    pub kasme:       [u8; 32],\n    pub dl_count:    u32,\n    pub ul_count:    u32,\n    pub cipher_alg:  u8,\n    pub integr_alg:  u8,\n    _pad:            [u8; 10],\n}\n\n/// PDN session state — IP address and APN.\n#[derive(Debug, Clone)]\n#[repr(C, align(64))]\npub struct SessionState {\n    pub ip_address:  [u8; 4],\n    pub apn:         [u8; 64],\n    pub apn_len:     u8,\n    pub bearer_id:   u8,\n    pub active:      bool,\n    _pad:            [u8; 5],\n}\n\n/// GTP tunnel component — maps subscriber to TEID.\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n#[repr(C, align(16))]\npub struct TunnelComponent {\n    /// Downlink TEID (assigned by eNodeB/gNodeB)\n    pub dl_teid:     u32,\n    /// Uplink TEID (assigned by UPF/P-GW)\n    pub ul_teid:     u32,\n    /// eNodeB/gNodeB transport address\n    pub enb_addr:    [u8; 4],\n    pub enb_port:    u16,\n    _pad:            [u8; 2],\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn security_context_alignment() {\n        assert_eq!(core::mem::align_of::<SecurityContext>(), 64,\n            \"SecurityContext must be 64-byte aligned for cache-line safety\");\n    }\n    #[test]\n    fn session_state_alignment() {\n        assert_eq!(core::mem::align_of::<SessionState>(), 64);\n    }\n    #[test]\n    fn tunnel_component_alignment() {\n        assert_eq!(core::mem::align_of::<TunnelComponent>(), 16);\n    }\n}\n")
+    fc("systems", "rs",
+      "//! ECS Systems — subscriber lifecycle processing.\n//!\n//! Each system is a pure function over component sets.\n//! No heap allocation in hot path. Designed for batch processing.\n// Auto-generated stub — Phase 2 target\n")
+    fc("world", "rs",
+      "//! ECS World — entity allocator and component storage.\n//!\n//! Designed to hold 100k+ concurrent subscribers.\n//! SoA layout: each component type in a separate Vec.\n\nuse std::collections::HashMap;\nuse crate::ecs::components::{\n    ImsiComponent, AuthState, SecurityContext, SessionState, TunnelComponent\n};\n\n/// Entity ID — opaque u32 index.\n#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]\npub struct EntityId(pub u32);\n\n/// The ECS world — owns all subscriber component storage.\n///\n/// SoA layout: each Vec<T> is independently cache-friendly.\n/// Iteration over any single component type is a sequential scan.\npub struct CoreWorld {\n    // Entity allocator\n    next_id:     u32,\n    free_list:   Vec<EntityId>,\n\n    // Component storage (SoA)\n    pub imsi:     HashMap<EntityId, ImsiComponent>,\n    pub auth:     HashMap<EntityId, AuthState>,\n    pub security: HashMap<EntityId, SecurityContext>,\n    pub session:  HashMap<EntityId, SessionState>,\n    pub tunnel:   HashMap<EntityId, TunnelComponent>,\n}\n\nimpl CoreWorld {\n    pub fn new() -> Self {\n        Self {\n            next_id:   0,\n            free_list: Vec::new(),\n            imsi:     HashMap::new(),\n            auth:     HashMap::new(),\n            security: HashMap::new(),\n            session:  HashMap::new(),\n            tunnel:   HashMap::new(),\n        }\n    }\n\n    /// Allocate a new entity (subscriber slot).\n    pub fn spawn(&mut self) -> EntityId {\n        if let Some(id) = self.free_list.pop() {\n            return id;\n        }\n        let id = EntityId(self.next_id);\n        self.next_id += 1;\n        id\n    }\n\n    /// Deallocate an entity — all components are removed.\n    pub fn despawn(&mut self, id: EntityId) {\n        self.imsi.remove(&id);\n        self.auth.remove(&id);\n        self.security.remove(&id);\n        self.session.remove(&id);\n        self.tunnel.remove(&id);\n        self.free_list.push(id);\n    }\n\n    /// Return number of live entities.\n    pub fn len(&self) -> usize { self.imsi.len() }\n    pub fn is_empty(&self) -> bool { self.len() == 0 }\n}\n\nimpl Default for CoreWorld {\n    fn default() -> Self { Self::new() }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn spawn_and_despawn() {\n        let mut world = CoreWorld::new();\n        let e1 = world.spawn();\n        let e2 = world.spawn();\n        assert_ne!(e1, e2);\n        world.imsi.insert(e1, ImsiComponent(123456789012345));\n        assert_eq!(world.len(), 1);\n        world.despawn(e1);\n        assert_eq!(world.len(), 0);\n        // Free list should recycle e1\n        let e3 = world.spawn();\n        assert_eq!(e3, e1);\n    }\n}\n")
+    fc("registry", "rs",
+      "//! IMSI → EntityId reverse index.\n//!\n//! When a UE attaches, we need O(1) lookup: IMSI → world entity.\n//! This registry is the secondary index over the ECS world.\n// Auto-generated stub — Phase 2\n")
+
+  crates.midn-core.src.mme::
+    fc("mod", "rs",
+      "//! MME — Mobility Management Entity (LTE / 4G)\n//!\n//! The MME is the control plane brain of LTE:\n//!   - Authenticates UEs via HSS\n//!   - Manages security contexts\n//!   - Coordinates with eNodeB via S1AP\n//!   - Sets up PDN connections via S-GW/P-GW\n\npub mod state_machine;\npub mod attach;\n\npub use state_machine::Mme;\n")
+    fc("state_machine", "rs",
+      "//! MME top-level state machine.\n//!\n//! Processes incoming messages from eNodeB (S1AP) and\n//! UE (via NAS), updating ECS subscriber state accordingly.\n\nuse crate::ecs::world::CoreWorld;\n\npub struct Mme {\n    world: CoreWorld,\n}\n\nimpl Mme {\n    pub fn new() -> Self {\n        Self { world: CoreWorld::new() }\n    }\n\n    // TODO: process_s1ap_message, process_nas_message — Phase 2\n}\n\nimpl Default for Mme {\n    fn default() -> Self { Self::new() }\n}\n")
+    fc("attach", "rs",
+      "//! MME Attach procedure — 3GPP TS 23.401 Section 5.3.2\n//!\n//! Sequence:\n//!   1. UE sends Attach Request (NAS) via eNodeB (S1AP)\n//!   2. MME authenticates UE via Milenage (midn-auth)\n//!   3. MME activates NAS security\n//!   4. MME creates default PDN connection\n//!   5. MME sends Attach Accept with GUTI + IP address\n// Auto-generated stub — Phase 2\n")
+
+  crates.midn-core.src.amf::
+    fc("mod", "rs",
+      "//! AMF — Access and Mobility Function (5G NR)\n//!\n//! 5G counterpart to the LTE MME. Communicates with gNodeB via NGAP.\n//! Priority 3 — implement after MME is stable.\n\npub mod state_machine;\npub mod registration;\n\npub use state_machine::Amf;\n")
+    fc("state_machine", "rs",
+      "//! AMF top-level state machine — 5G NR.\n//! Auto-generated stub — Phase 3 (5G extension)\n\nuse crate::ecs::world::CoreWorld;\n\npub struct Amf {\n    world: CoreWorld,\n}\n\nimpl Amf {\n    pub fn new() -> Self { Self { world: CoreWorld::new() } }\n}\n\nimpl Default for Amf {\n    fn default() -> Self { Self::new() }\n}\n")
+    fc("registration", "rs",
+      "//! AMF Registration procedure — 3GPP TS 23.502 Section 4.2.2\n//! Auto-generated stub — Phase 3\n")
+
+  // ── crates/midn-userplane ─────────────────────────────────────────────────────
+  crates.midn-userplane::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-userplane\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nname = \"midn_userplane\"\ncrate-type = [\"lib\"]\n\n[dependencies]\nmidn-proto = { path = \"../midn-proto\" }\ntokio      = { version = \"1\", features = [\"full\"] }\nbytes      = \"1.5\"\nthiserror  = \"1.0\"\ntracing    = \"0.1\"\n\n# eBPF loader — Linux only\n[target.'cfg(target_os = \"linux\")'.dependencies]\naya     = { version = \"0.13\", features = [\"async_tokio\"] }\naya-log = \"0.2\"\n\n[build-dependencies]\n# Required to compile the eBPF crate and embed the object\n# Uncomment when Phase 3 begins:\n# aya-build = \"0.1\"\n")
+    fc("build", "rs",
+      "//! build.rs — compile midn-userplane-ebpf and embed the BPF object.\n//!\n//! Uncomment when Phase 3 eBPF work begins.\n//! Requires: cargo install bpf-linker\n\nfn main() {\n    // TODO Phase 3: use aya_build::build() to compile the eBPF program\n    // and embed the resulting .bpf.o into this crate via include_bytes!.\n    println!(\"cargo:rerun-if-changed=../midn-userplane-ebpf/src/\");\n}\n")
+
+  crates.midn-userplane.src::
+    fc("lib", "rs",
+      "//! midn-userplane — User Plane Function (UPF)\n//!\n//! Responsibilities:\n//!   - Terminate GTP-U tunnels from eNodeB/gNodeB\n//!   - Route subscriber data packets to PDN (internet)\n//!   - Enforce per-subscriber QoS policies\n//!   - XDP/eBPF fast path for kernel-level steering\n//!\n//! Phase 3 target: line-rate packet steering via XDP.\n//! Current phase: userspace GTP-U tunnel management.\n\npub mod upf;\n\n#[cfg(target_os = \"linux\")]\npub mod ebpf;\n\npub use upf::routing::RoutingTable;\npub use upf::tunnel::TunnelManager;\n")
+
+  crates.midn-userplane.src.upf::
+    fc("mod", "rs",
+      "//! UPF — User Plane Function core logic.\n\npub mod routing;\npub mod tunnel;\npub mod session;\n")
+    fc("routing", "rs",
+      "//! Routing table — maps TEID to subscriber next-hop.\n//!\n//! Every incoming GTP-U packet carries a TEID. The routing table\n//! maps TEID → destination (PDN IP, or another tunnel).\n\nuse std::collections::HashMap;\n\n/// A routing entry: maps an uplink TEID to an internet destination.\n#[derive(Debug, Clone, Copy)]\npub struct RouteEntry {\n    /// Subscriber's assigned IP address (source in PDN direction)\n    pub ue_ip:      [u8; 4],\n    /// PDN gateway IP address\n    pub pdn_gw_ip:  [u8; 4],\n    /// Downlink TEID (toward eNodeB)\n    pub dl_teid:    u32,\n    /// eNodeB transport address\n    pub enb_ip:     [u8; 4],\n    pub enb_port:   u16,\n}\n\npub struct RoutingTable {\n    /// ul_teid → RouteEntry\n    entries: HashMap<u32, RouteEntry>,\n}\n\nimpl RoutingTable {\n    pub fn new() -> Self { Self { entries: HashMap::new() } }\n\n    pub fn insert(&mut self, ul_teid: u32, entry: RouteEntry) {\n        self.entries.insert(ul_teid, entry);\n    }\n\n    pub fn remove(&mut self, ul_teid: u32) -> Option<RouteEntry> {\n        self.entries.remove(&ul_teid)\n    }\n\n    #[inline(always)]\n    pub fn lookup(&self, ul_teid: u32) -> Option<&RouteEntry> {\n        self.entries.get(&ul_teid)\n    }\n\n    pub fn len(&self) -> usize { self.entries.len() }\n    pub fn is_empty(&self) -> bool { self.entries.is_empty() }\n}\n\nimpl Default for RoutingTable { fn default() -> Self { Self::new() } }\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn insert_and_lookup() {\n        let mut table = RoutingTable::new();\n        let entry = RouteEntry {\n            ue_ip: [10, 0, 0, 1],\n            pdn_gw_ip: [203, 0, 113, 1],\n            dl_teid: 0xAAAA_0001,\n            enb_ip: [192, 168, 1, 1],\n            enb_port: 2152,\n        };\n        table.insert(0xBBBB_0001, entry);\n        let found = table.lookup(0xBBBB_0001).unwrap();\n        assert_eq!(found.ue_ip, [10, 0, 0, 1]);\n        assert!(table.lookup(0xDEAD_BEEF).is_none());\n    }\n}\n")
+    fc("tunnel", "rs",
+      "//! GTP-U tunnel manager — lifecycle of GTP tunnels.\n//!\n//! A tunnel is created when a subscriber attaches and a PDN bearer\n//! is established. It is destroyed when the subscriber detaches.\n//! Each tunnel is identified by a pair of TEIDs (UL + DL).\n// Auto-generated stub — Phase 2\n")
+    fc("session", "rs",
+      "//! User plane session — per-subscriber state in the UPF.\n//!\n//! Links the control-plane subscriber entity (EntityId in midn-core)\n//! to the data-plane routing and tunnel state.\n// Auto-generated stub — Phase 2\n")
+
+  crates.midn-userplane.src.ebpf::
+    fc("mod", "rs",
+      "//! eBPF loader — Linux only.\n//!\n//! Loads and attaches the XDP program from midn-userplane-ebpf.\n//! The compiled BPF object is embedded via include_bytes! at build time.\n\npub mod loader;\n")
+    fc("loader", "rs",
+      "//! eBPF program loader using Aya.\n//!\n//! Phase 3 target — loads the XDP program onto the NIC.\n\n/// Embedded BPF object compiled from midn-userplane-ebpf.\n/// Uncomment when Phase 3 eBPF work begins.\n// static BPF_OBJECT: &[u8] = include_bytes!(concat!(env!(\"OUT_DIR\"), \"/midn_xdp.bpf.o\"));\n\n/// Load and attach the XDP program to a network interface.\n///\n/// # Arguments\n/// * `iface` - Network interface name (e.g. \"eth0\", \"ens3\")\npub async fn load_xdp(_iface: &str) -> Result<(), Box<dyn std::error::Error>> {\n    // TODO Phase 3:\n    // let bpf = aya::Bpf::load(BPF_OBJECT)?;\n    // let program: &mut aya::programs::Xdp = bpf.program_mut(\"gtp_xdp\").unwrap().try_into()?;\n    // program.load()?;\n    // program.attach(iface, aya::programs::XdpFlags::default())?;\n    todo!(\"Phase 3: eBPF XDP loader\")\n}\n")
+
+  // ── crates/midn-userplane-ebpf ────────────────────────────────────────────────
+  crates.midn-userplane-ebpf::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-userplane-ebpf\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n# This crate compiles to a BPF target — no_std, no std allocator.\n# Build with:\n#   cargo build -p midn-userplane-ebpf --release\n#     --target bpfel-unknown-none -Z build-std=core\n# Requires: cargo install bpf-linker\n\n[[bin]]\nname = \"midn-userplane-ebpf\"\npath = \"src/main.rs\"\n\n[dependencies]\naya-ebpf  = \"0.1\"\naya-log-ebpf = \"0.1\"\n")
+    fc("rust-toolchain", "toml",
+      "# eBPF programs require nightly for bpf-linker compatibility.\n[toolchain]\nchannel = \"nightly\"\n")
+
+  crates.midn-userplane-ebpf.src::
+    fc("main", "rs",
+      "//! midn-userplane-ebpf — XDP kernel program\n//!\n//! This runs INSIDE the Linux kernel at the NIC driver level.\n//! No standard library. No heap allocation. No system calls.\n//!\n//! The XDP hook fires for every incoming packet BEFORE the kernel\n//! networking stack processes it — lowest possible latency.\n\n#![no_std]\n#![no_main]\n\nuse aya_ebpf::{macros::xdp, programs::XdpContext};\nuse aya_ebpf::bindings::xdp_action;\n\nmod gtp_xdp;\n\n/// XDP entry point — called per-packet at NIC speed.\n#[xdp]\npub fn midn_gtp_xdp(ctx: XdpContext) -> u32 {\n    match gtp_xdp::process_packet(ctx) {\n        Ok(action) => action,\n        Err(_)     => xdp_action::XDP_PASS,\n    }\n}\n\n#[panic_handler]\nfn panic(_info: &core::panic::PanicInfo) -> ! {\n    // Kernel panics are fatal — but in BPF context we just loop.\n    // The verifier ensures this is unreachable in practice.\n    loop {}\n}\n")
+    fc("gtp_xdp", "rs",
+      "//! GTP-U XDP fast path.\n//!\n//! Decision tree (per packet):\n//!   1. Is this UDP on port 2152?\n//!      No  → XDP_PASS (let kernel handle it)\n//!   2. Parse GTP-U header — is it a G-PDU?\n//!      No  → XDP_PASS (echo request etc, let userspace handle)\n//!   3. Look up TEID in BPF hash map → Route entry\n//!      Miss → XDP_PASS (unknown tunnel, userspace creates it)\n//!   4. Rewrite outer IP/UDP headers with destination route\n//!      → XDP_TX (send back out the same NIC, redirected)\n\nuse aya_ebpf::programs::XdpContext;\nuse aya_ebpf::bindings::xdp_action;\n\n/// Process a single incoming packet.\n/// Returns the XDP action to take.\npub fn process_packet(_ctx: XdpContext) -> Result<u32, ()> {\n    // TODO Phase 3:\n    // 1. Check Ethernet header → is IP?\n    // 2. Check IP → is UDP?\n    // 3. Check UDP dst port == 2152 (GTP-U)\n    // 4. Parse 8-byte GTP-U header, extract TEID\n    // 5. BPF map lookup: teid → route_entry\n    // 6. Rewrite headers, XDP_TX\n    Ok(xdp_action::XDP_PASS)\n}\n")
+
+  // ── docs ──────────────────────────────────────────────────────────────────────
+  docs::
+    fc("architecture", "md",
+      "# Midn Core Architecture\n\nModular ECS-driven Private LTE/5G Core Network.\n\n## Crates\n\n| Crate | Role | Phase |\n|---|---|---|\n| midn-auth | Milenage/TUAK authentication | 1 |\n| midn-proto | NAS, S1AP, NGAP, GTP-U | 2 |\n| midn-core | MME/AMF + ECS orchestrator | 2 |\n| midn-userplane | UPF + eBPF loader | 3 |\n| midn-userplane-ebpf | XDP kernel program | 3 |\n\n## Dependency Graph\n\n```\nmidn-auth\n    ↑\nmidn-proto\n    ↑          ↑\nmidn-core   midn-userplane\n                ↑\n        midn-userplane-ebpf (kernel, no_std)\n```\n\n## Performance Targets\n\n| System | Target |\n|---|---|\n| Milenage auth vector | < 10 µs |\n| GTP-U parse | < 500 ns/packet |\n| ECS subscriber capacity | 100k+ |\n| XDP routing | line rate |\n")
+    fc("dev-setup", "md",
+      "# Dev Setup\n\n## Prerequisites\n\n```bash\n# Rust stable >= 1.85 (Edition 2024)\nrustup update stable\n\n# For eBPF (Phase 3 only, Linux)\ncargo install bpf-linker\n```\n\n## Build\n\n```bash\n# Build one crate at a time\ncargo build -p midn-auth\ncargo build -p midn-proto\ncargo build -p midn-core\ncargo build -p midn-userplane\n\n# Tests\ncargo test -p midn-auth\ncargo test -p midn-proto\ncargo test -p midn-core\ncargo test -p midn-userplane\n\n# Benchmarks (release only)\ncargo bench -p midn-auth\n```\n\n## eBPF (Phase 3, Linux only)\n\n```bash\n# Requires nightly + bpf-linker\ncargo +nightly build -p midn-userplane-ebpf \\\n  --release --target bpfel-unknown-none \\\n  -Z build-std=core\n```\n")
+    fc("phase1-auth", "md",
+      "# Phase 1 — Foundation & Identity\n\n## Goal\n\nImplement the Milenage AKA procedure such that:\n- Given (Ki, OPc, RAND, SQN, AMF) produce (AUTN, XRES, CK, IK)\n- All 3GPP TS 35.207 official test vectors pass\n- Auth vector generation < 10 µs (constant-time)\n\n## Milenage Algorithm\n\nMilenage is built on 5 functions (f1..f5*) over AES-128:\n\n| Function | Output | Purpose |\n|---|---|---|\n| f1 | MAC-A (8 bytes) | Network auth token |\n| f2 | RES (8 bytes) | UE response |\n| f3 | CK (16 bytes) | Cipher key |\n| f4 | IK (16 bytes) | Integrity key |\n| f5 | AK (6 bytes) | Anonymity key |\n| f1* | MAC-S | Re-sync MAC |\n| f5* | AK* | Re-sync AK |\n\n## Test Strategy\n\n1. Implement AES-128 core (use `aes` crate with `zeroize` feature)\n2. Implement f1..f5* against spec\n3. Validate against 3GPP TS 35.207 test set 1..6\n4. Add constant-time property tests using subtle\n5. Fuzz with cargo-fuzz targeting the auth vector generator\n")
+    fc("phase2-proto", "md",
+      "# Phase 2 — Protocol Stack\n\n## Goal\n\nFull LTE attach procedure simulated end-to-end without real hardware:\n- Mock eNodeB (sends S1AP messages)\n- MME processes attach, authenticates via midn-auth\n- ECS world tracks subscriber state through all steps\n\n## LTE Attach Sequence\n\n```\nUE → eNodeB: RRC Connection + Attach Request (NAS)\neNodeB → MME: S1AP InitialUeMessage (contains NAS PDU)\nMME → HSS:   Authentication Info Request\nHSS → MME:   Auth Vectors (RAND, AUTN, XRES, CK, IK)\nMME → UE:    Authentication Request (NAS)\nUE → MME:    Authentication Response (RES)\nMME: verify RES == XRES (constant-time)\nMME → UE:    Security Mode Command (NAS)\nUE → MME:    Security Mode Complete\nMME → UE:    Attach Accept + IP address\nUE → MME:    Attach Complete\n```\n\n## Performance Target\n\nFull attach: < 50 ms (network latency dominates, not CPU)\nECS subscriber creation: < 1 µs\n")
+    fc("phase3-userplane", "md",
+      "# Phase 3 — User Plane\n\n## Goal\n\nPackets routed at XDP speed through GTP-U tunnels:\n- Packets from internet → UPF → GTP-U → eNodeB → UE\n- Packets from UE → eNodeB → GTP-U → UPF → internet\n\n## XDP Architecture\n\n```\n[NIC] → [XDP hook (midn_gtp_xdp)] → [BPF map lookup]\n                                          |\n                                   hit: XDP_TX (forward)\n                                   miss: XDP_PASS (userspace)\n```\n\n## BPF Maps Required\n\n| Map | Key | Value | Purpose |\n|---|---|---|---|\n| teid_to_route | u32 (UL TEID) | RouteEntry | UL packet steering |\n| ue_to_teid | [u8;4] (UE IP) | u32 (DL TEID) | DL packet steering |\n\n## Linux Kernel Requirements\n\n- Kernel ≥ 5.8 (BPF ring buffer support)\n- XDP native mode requires driver support (ixgbe, i40e, mlx5, etc.)\n- Fallback: XDP generic mode (slower but works on any driver)\n")
+    fc("platform-optimization", "md",
+      "# Midn Core — Platform Optimization Rules\n\n> Inherits all rules from Mid Engine platform-optimization.md.\n> Additional telecom-specific rules below.\n\n## Rule 0 (Inherited)\n\nAn optimization that cannot be benchmarked does not exist.\nAll Criterion numbers must include build mode labels.\n\n## Telecom Rule 1 — Constant-Time is Non-Negotiable\n\nAny comparison involving authentication material (RES, MAC, keys)\nMUST use `subtle::ConstantTimeEq`. A timing oracle on the auth path\nis a real attack surface (MITM on authentication challenge).\n\n## Telecom Rule 2 — Zero-Copy on the Hot Path\n\nThe GTP-U parser must never allocate. The XDP program never can.\nAll packet processing from NIC to routing decision must be a series\nof pointer arithmetic operations on the original packet buffer.\n\n## Telecom Rule 3 — BPF Map Updates Are Atomic\n\nWhen a subscriber attaches, the control plane (midn-core) must\ninstall the routing entry in the BPF map BEFORE signaling Attach\nAccept. If a packet arrives before the map entry exists, it falls\nto userspace (XDP_PASS) and is handled correctly but slowly.\n\n## Performance Baseline Targets\n\n| Operation | Target | Measurement Method |\n|---|---|---|\n| Milenage AKA | < 10 µs | Criterion bench |\n| GTP-U header parse | < 500 ns | Criterion bench |\n| ECS subscriber spawn | < 1 µs | Criterion bench |\n| BPF map update | < 1 µs | perf stat |\n| XDP packet decision | < 200 ns | packet timestamping |\n")
+
+  // ── benches ───────────────────────────────────────────────────────────────────
+  benches::
+    fc("auth_bench", "rs",
+      "//! Authentication benchmark — Criterion.rs\n//!\n//! Run: cargo bench -p midn-auth\n//! Results in: target/criterion/\n//!\n//! Validates Phase 1 target: Milenage auth vector < 10 µs\n\nuse criterion::{black_box, criterion_group, criterion_main, Criterion};\n\nfn bench_milenage_placeholder(c: &mut Criterion) {\n    // TODO Phase 1: replace with real MilenageContext::generate_vector bench\n    c.bench_function(\"milenage_placeholder\", |b| {\n        b.iter(|| black_box(0u8.wrapping_add(1)))\n    });\n}\n\ncriterion_group!(benches, bench_milenage_placeholder);\ncriterion_main!(benches);\n")
+    fc("proto_bench", "rs",
+      "//! Protocol benchmark — Criterion.rs\n//!\n//! Run: cargo bench -p midn-proto\n//! Validates Phase 2 target: GTP-U parse < 500 ns/packet\n\nuse criterion::{black_box, criterion_group, criterion_main, Criterion};\nuse midn_proto::gtp::parser::GtpuParser;\n\nfn bench_gtpu_parse(c: &mut Criterion) {\n    // Minimal G-PDU packet: 8-byte header + 20-byte IPv4 header\n    let buf = [\n        0x30u8, 0xFF, 0x00, 0x18,\n        0x00, 0x00, 0x00, 0x01,\n        0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x40, 0x00,\n        0x40, 0x11, 0x00, 0x00, 0x0A, 0x00, 0x00, 0x01,\n        0x0A, 0x00, 0x00, 0x02,\n    ];\n    c.bench_function(\"gtpu_parse_gpdu\", |b| {\n        b.iter(|| {\n            let pkt = GtpuParser::parse(black_box(&buf));\n            black_box(pkt)\n        })\n    });\n}\n\ncriterion_group!(benches, bench_gtpu_parse);\ncriterion_main!(benches);\n")
+)
