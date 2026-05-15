@@ -1,0 +1,22 @@
+[package]
+name = "midn-proto"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "midn_proto"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[dependencies]
+midn-auth = { path = "../midn-auth" }
+postcard  = { version = "1.0", features = ["alloc"] }
+tokio     = { version = "1", features = ["net", "sync", "io-util"] }
+bytes     = "1.5"
+thiserror = "1.0"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "proto_bench"
+harness = false

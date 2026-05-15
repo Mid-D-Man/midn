@@ -1,0 +1,25 @@
+[package]
+name = "midn-userplane"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "midn_userplane"
+crate-type = ["lib"]
+
+[dependencies]
+midn-proto = { path = "../midn-proto" }
+tokio      = { version = "1", features = ["full"] }
+bytes      = "1.5"
+thiserror  = "1.0"
+tracing    = "0.1"
+
+# eBPF loader — Linux only
+[target.'cfg(target_os = "linux")'.dependencies]
+aya     = { version = "0.13", features = ["async_tokio"] }
+aya-log = "0.2"
+
+[build-dependencies]
+# Required to compile the eBPF crate and embed the object
+# Uncomment when Phase 3 begins:
+# aya-build = "0.1"

@@ -1,0 +1,19 @@
+[package]
+name = "midn-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "midn_core"
+crate-type = ["lib"]
+
+[dependencies]
+midn-auth  = { path = "../midn-auth" }
+midn-proto = { path = "../midn-proto" }
+tokio      = { version = "1", features = ["full"] }
+thiserror  = "1.0"
+tracing    = "0.1"
+# mid-math = { workspace = true }  # uncomment after configuring workspace dep
+
+[dev-dependencies]
+tokio-test = "0.4"

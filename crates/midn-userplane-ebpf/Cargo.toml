@@ -1,0 +1,18 @@
+[package]
+name = "midn-userplane-ebpf"
+version = "0.1.0"
+edition = "2024"
+
+# This crate compiles to a BPF target — no_std, no std allocator.
+# Build with:
+#   cargo build -p midn-userplane-ebpf --release
+#     --target bpfel-unknown-none -Z build-std=core
+# Requires: cargo install bpf-linker
+
+[[bin]]
+name = "midn-userplane-ebpf"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf  = "0.1"
+aya-log-ebpf = "0.1"
