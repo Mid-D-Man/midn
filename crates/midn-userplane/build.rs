@@ -1,10 +1,18 @@
-//! build.rs — compile midn-userplane-ebpf and embed the BPF object.
+// crates/midn-userplane/build.rs
+//! Build script — compiles the eBPF crate and embeds the BPF object.
 //!
-//! Uncomment when Phase 3 eBPF work begins.
+//! Uncomment the aya-build block when Phase 3 begins.
 //! Requires: cargo install bpf-linker
 
 fn main() {
-    // TODO Phase 3: use aya_build::build() to compile the eBPF program
-    // and embed the resulting .bpf.o into this crate via include_bytes!.
+    // Tell Cargo to re-run this build script if the eBPF source changes.
     println!("cargo:rerun-if-changed=../midn-userplane-ebpf/src/");
+    println!("cargo:rerun-if-changed=build.rs");
+
+    // TODO Phase 3: compile the eBPF program and embed it.
+    //
+    // use aya_build::cargo_metadata;
+    // aya_build::build_ebpf_programs(&[
+    //     "midn-userplane-ebpf",
+    // ]).unwrap();
 }
