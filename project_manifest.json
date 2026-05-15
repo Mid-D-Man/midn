@@ -1,5 +1,57 @@
 {
   "project_name": "Midn Core",
   "version": "0.1.0-alpha",
-  "author": "MidManStudio"
-}
+  "author": "MidManStudio",
+  "objective": {
+    "what": "A high-performance, ECS-driven Private LTE/5G Core Network.",
+    "why": "To bypass legacy, slow-moving telecom stacks with a data-oriented, game-engine-inspired architecture optimized for low-latency routing and satellite handovers.",
+    "how": "Utilizing Rust for memory safety, ECS for state management, and eBPF/XDP for kernel-level packet processing."
+  },
+  "tech_stack": {
+    "language": "Rust (Edition 2024)",
+    "math_engine": "mid-math (Custom SIMD-optimized crate from Mid Engine)",
+    "async_runtime": "Tokio",
+    "packet_processing": "Aya (eBPF in Rust) + XDP",
+    "state_management": "ECS (Entity Component System)",
+    "serialization": "Postcard (zero-copy binary)",
+    "crypto": "Zeroize + Subtle (constant-time)"
+  },
+  "architecture_structure": {
+    "crates/midn-auth": "Subscriber authentication — Milenage/TUAK algorithms, AKA procedure, Ki/OPc handling",
+    "crates/midn-proto": "Protocol stack — NAS, S1AP, NGAP, GTP-U zero-copy parser",
+    "crates/midn-core": "Control plane — MME/AMF state machine and ECS subscriber registry",
+    "crates/midn-userplane": "User plane — UPF routing, GTP tunnel management, eBPF loader",
+    "crates/midn-userplane-ebpf": "Kernel-space XDP program — packet steering at NIC speed",
+    "crates/mid-math": "External dependency from Mid Engine — signal geometry, handover math"
+  },
+  "dependency_graph": {
+    "midn-auth": [],
+    "midn-proto": ["midn-auth"],
+    "midn-core": ["midn-auth", "midn-proto", "mid-math"],
+    "midn-userplane": ["midn-proto", "mid-math"],
+    "midn-userplane-ebpf": []
+  },
+  "build_phases": {
+    "phase_1": {
+      "name": "Foundation & Identity",
+      "crates": ["midn-auth"],
+      "deliverable": "Milenage AKA procedure producing (RES, CK, IK, AUTN) tuples"
+    },
+    "phase_2": {
+      "name": "Protocol Stack",
+      "crates": ["midn-proto", "midn-core"],
+      "deliverable": "Full LTE attach procedure simulated end-to-end"
+    },
+    "phase_3": {
+      "name": "User Plane",
+      "crates": ["midn-userplane", "midn-userplane-ebpf"],
+      "deliverable": "Packets routed at XDP speed through GTP-U tunnels"
+    }
+  },
+  "performance_targets": {
+    "milenage_auth_vector": "< 10 µs",
+    "gtp_u_parse": "< 500 ns per packet",
+    "ecs_subscriber_capacity": "100k+ concurrent sessions",
+    "xdp_routing": "line rate (1-10 Gbps NIC)"
+  }
+        }
