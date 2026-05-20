@@ -1,69 +1,103 @@
 # Midn Core
 
-> High-performance ECS-driven Private LTE/5G Core Network
+> Experimental LTE/5G Core Network — Rust
 
-Unity is a black box. Telecom stacks are legacy black holes.
-Midn Core is for the Mad Scientists who want a modular,
-game-engine-speed toolkit for cellular networking they can actually control.
+An experimental, from-scratch implementation of a 3GPP mobile core network.
+Not production-ready. Not feature-complete. Built to understand what a
+data-oriented, zero-copy cellular core actually looks like when you stop
+accepting the assumptions of legacy stacks.
 
-## Why
+## What it is
 
-Legacy telecom stacks (OpenAirInterface, free5GC) are built on C/C++ with
-hand-crafted state machines. Midn Core uses the same ECS architecture that
-runs 100k entity transforms in 131 µs — applied to subscriber session state.
+A private LTE/5G core network with:
+
+- **Milenage/TUAK** — 3GPP AKA authentication against real SIM cards
+- **NAS / S1AP / NGAP** — control plane protocol parsers and state machines
+- **MME / AMF** — subscriber session lifecycle backed by an ECS registry
+- **GTP-U** — zero-copy user plane tunnel parser
+- **eBPF / XDP** — kernel-level packet steering (Phase 3)
+
+## What it is not
+
+- Production-ready (Phase 1 in progress)
+- A full 3GPP compliance suite
+- A drop-in replacement for OpenAirInterface or free5GC
+- Stable API (everything changes until v1.0)
 
 ## Crates
 
 | Crate | Role | Phase |
 |---|---|---|
-| `midn-auth` | Milenage/TUAK SIM authentication | 1 |
-| `midn-proto` | NAS, S1AP, NGAP, GTP-U parsers | 2 |
-| `midn-core` | MME/AMF state machine + ECS orchestrator | 2 |
-| `midn-userplane` | High-speed UPF + eBPF/XDP routing | 3 |
-| `midn-userplane-ebpf` | Kernel-space XDP program (no_std) | 3 |
+| `midn-auth` | Milenage / TUAK SIM authentication | **1 — active** |
+| `midn-proto` | NAS, S1AP, NGAP, GTP-U | 2 |
+| `midn-core` | MME/AMF state machine + ECS subscriber registry | 2 |
+| `midn-userplane` | UPF routing + eBPF loader (Linux) | 3 |
+| `midn-userplane-ebpf` | Kernel XDP program — no\_std | 3 |
+
+## Quick Start
+
+```bash
+# Phase 1: authentication only
+cargo build -p midn-auth
+cargo test  -p midn-auth
+
+# Phase 2: protocol stack
+cargo build -p midn-proto
+cargo test  -p midn-proto
+cargo build -p midn-core
+cargo test  -p midn-core
+
+# Benchmarks (release numbers only — debug is meaningless for perf)
+cargo bench -p midn-auth
+cargo bench -p midn-proto
+```
+
+## mid-math dependency
+
+Signal geometry and handover calculations use `mid-math`. Pick one option
+in the root `Cargo.toml` and uncomment it:
+
+```toml
+# Git (CI-friendly)
+# mid-math = { git = "https://github.com/Mid-D-Man/mid-engine", branch = "main" }
+
+# Local path (mid-engine checked out alongside midn-core)
+# mid-math = { path = "../mid-engine/crates/mid-math" }
+```
 
 ## Performance Targets
 
-| System | Budget | Status |
+| Subsystem | Target | Measured by |
 |---|---|---|
-| Auth vector (Milenage) | < 10 µs | Phase 1 |
-| GTP-U parse (zero-copy) | < 500 ns/packet | Phase 2 |
-| UPF routing (eBPF/XDP) | line rate | Phase 3 |
-| ECS subscriber capacity | 100k+ sessions | Phase 2 |
+| Milenage auth vector | < 10 µs | `cargo bench -p midn-auth` |
+| GTP-U header parse | < 500 ns | `cargo bench -p midn-proto` |
+| ECS subscriber spawn | < 1 µs | unit tests |
+| Concurrent sessions | 100k+ | stress tests |
+| XDP packet decision | < 200 ns (Phase 3) | kernel perf counters |
 
-## Technical Mandates
+## CI
 
-- **No exceptions** — Rust memory safety + no unwrap in hot paths
-- **Zero-copy** — postcard for serialization, XDP for packet I/O
-- **ECS-first** — subscriber state is components, not objects
-- **FFI-ready** — every crate exposes a C API for integration
-- **Constant-time crypto** — `subtle` crate for all auth comparisons
+Tests and benchmarks run on GitHub Actions.
 
-## Getting Started
+| Trigger | What runs |
+|---|---|
+| Commit with `--midn-auth` | midn-auth tests |
+| Commit with `--midn-proto` | midn-proto tests |
+| Commit with `--midn-core` | midn-core tests |
+| Commit with `--midn-all` | all crates |
+| Actions tab (manual) | always runs all |
+
+Benchmark workflow is manual-only (Actions → "midn-core: Benchmarks").
+
+## eBPF (Phase 3, Linux ≥ 5.8 only)
 
 ```bash
-# Build one crate at a time — saves your CPU
-cargo build -p midn-auth
-cargo build -p midn-proto
+rustup toolchain install nightly --component rust-src
+cargo install bpf-linker
 
-# Tests
-cargo test -p midn-auth
-cargo test -p midn-proto
-
-# Benchmarks (release only — debug numbers are meaningless)
-cargo bench -p midn-auth
+cargo +nightly build -p midn-userplane-ebpf \
+  --release --target bpfel-unknown-none -Z build-std=core
 ```
-
-## mid-math Dependency
-
-This project depends on `mid-math` from Mid Engine for signal geometry
-and handover calculations. See workspace `Cargo.toml` for setup options.
-
-## Platform Notes
-
-- `midn-userplane` and `midn-userplane-ebpf` require **Linux ≥ 5.8**
-- eBPF compilation requires `bpf-linker`: `cargo install bpf-linker`
-- All other crates build on Linux, macOS, and Windows
 
 ## License
 
