@@ -17,15 +17,17 @@
 //! Implement f1..f5 and validate against all 3GPP TS 35.207 test sets.
 //! Performance target: < 10 µs per auth vector (Criterion bench).
 //!
-//! ## Implementation note
+//! ## Implementation plan
 //!
-//! Use the `aes` crate (with the `zeroize` feature) for the AES-128 core.
 //! Add to Cargo.toml:
 //!   aes = { version = "0.8", features = ["zeroize"] }
 //!
-//! The operator constant OP is pre-processed into OPc once at setup time:
-//!   OPc = AES_Ki(OP) XOR OP
-//! This avoids repeated computation and allows OPc to be stored instead of OP.
+//! Then:
+//!   1. `fn aes128(key: &[u8;16], input: &[u8;16]) -> [u8;16]`
+//!   2. `fn compute_opc(ki: &[u8;16], op: &[u8;16]) -> [u8;16]`
+//!   3. Implement f1..f5 per 3GPP TS 35.206 Section 4
+//!   4. Un-ignore the test set tests below
+//!   5. All 6 official test sets must pass before Phase 1 closes
 
 use subtle::ConstantTimeEq;
 use crate::keys::{Amf, AuthKey, AuthVector, OpCode, Rand, Sqn};
@@ -41,8 +43,6 @@ pub struct MilenageContext {
 
 impl MilenageContext {
     /// Bind to a subscriber's Ki and OPc.
-    ///
-    /// Both are cloned in — the originals may be dropped after construction.
     pub fn new(ki: AuthKey, opc: OpCode) -> Self {
         Self { ki, opc }
     }
@@ -50,33 +50,37 @@ impl MilenageContext {
     /// Generate a complete authentication vector for one AKA round.
     ///
     /// # Arguments
-    /// * `sqn` — current sequence number (monotonically increasing)
-    /// * `amf` — operator AMF field (use `Amf::STANDARD` for most setups)
+    /// * `sqn` — current sequence number (monotonically increasing per subscriber)
+    /// * `amf` — operator AMF field (use `Amf::STANDARD` for most deployments)
     ///
     /// # Returns
     /// `AuthVector` containing (RAND, AUTN, XRES, CK, IK).
-    /// The caller sends (RAND, AUTN) to the UE and keeps XRES for comparison.
+    /// Caller sends (RAND, AUTN) to the UE and stores XRES for comparison.
     ///
     /// # Panics
-    /// Panics with `todo!()` until Phase 1 implementation is complete.
+    /// `todo!()` until Phase 1 implementation is complete.
     pub fn generate_vector(&self, sqn: Sqn, amf: Amf) -> AuthVector {
-        let rand = Self::generate_rand();
-        let _ = (&self.ki, &self.opc, sqn, amf);
+        // Suppress unused variable warnings — these will be used once f1..f5
+        // are implemented. The underscore prefix documents intent.
+        let _rand = Self::generate_rand();
+        let _     = (&self.ki, &self.opc, sqn, amf);
+
         // TODO Phase 1: implement AES-128 core, then f1..f5
         // Step 1: temp_value = AES_Ki(RAND XOR OPc)
-        // Step 2: f1  → compute MAC-A using temp_value
-        // Step 3: f2  → RES (lower 8 bytes)
-        // Step 4: f3  → CK
-        // Step 5: f4  → IK
-        // Step 6: f5  → AK (6 bytes, XORed with SQN in AUTN)
+        // Step 2: f1  → MAC-A  (AUTN network auth token)
+        // Step 3: f2  → RES    (8 bytes, lower half of 16-byte output)
+        // Step 4: f3  → CK     (cipher key)
+        // Step 5: f4  → IK     (integrity key)
+        // Step 6: f5  → AK     (6 bytes, anonymity key XORed with SQN in AUTN)
         // Step 7: AUTN = (SQN XOR AK) || AMF || MAC-A
         todo!("Phase 1: implement Milenage f1..f5 — see 3GPP TS 35.206 Section 4")
     }
 
     /// Verify the RES received from the UE against the stored XRES.
     ///
-    /// MUST use constant-time comparison — timing difference reveals whether
-    /// guess is close, enabling a timing oracle attack.
+    /// Uses constant-time comparison — MUST NOT use `==` or `memcmp`.
+    /// Timing differences reveal whether a guess is close, enabling
+    /// a timing oracle attack on the authentication path.
     #[inline]
     pub fn verify_res(xres: &[u8; 8], res: &[u8; 8]) -> bool {
         xres.ct_eq(res).into()
@@ -90,25 +94,22 @@ impl MilenageContext {
 
 impl Drop for MilenageContext {
     fn drop(&mut self) {
-        // Ki and OPc are ZeroizeOnDrop — they wipe themselves.
-        // Nothing extra needed here, but the explicit Drop makes intent clear.
+        // Ki and OPc are ZeroizeOnDrop — they wipe on drop automatically.
+        // Explicit Drop makes the security contract visible at the call site.
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keys::AuthKey;
 
     // ── 3GPP TS 35.207 Official Test Set 1 ───────────────────────────────────
-    // These are the authoritative test vectors. ALL must pass before
-    // Phase 1 is considered complete.
     //
     // K    = 465b5ce8b199b49faa5f0a2ee238a6bc
-    // OP   = cdc202d5123e20f62b6d676ac72cb318
     // OPc  = cd63cb71954a9f4e48a5994e37a02baf
     // RAND = 23553cbe9637a89d218ae64dae47bf35
-    // SQN  = ff9bb4d0b607
-    // AMF  = b9b9
+    // SQN  = ff9bb4d0b607   AMF = b9b9
     //
     // Expected:
     //   MAC-A = 4a9ffac354dfafb3
@@ -116,19 +117,21 @@ mod tests {
     //   CK    = b40ba9a3c58b2a05bbf0d987b21bf8cb
     //   IK    = f769bcd751044604127672711c6d3441
     //   AK    = aa689c648370
-    //   AUTN  = aa689c6483700000b9b94a9ffac354df (SQN XOR AK || AMF || MAC-A)
 
     #[test]
-    #[ignore = "Phase 1 implementation required — uncomment when f1..f5 are done"]
-    fn test_set_1_mac_a() {
+    #[ignore = "Phase 1 implementation required — un-ignore when f1..f5 are done"]
+    fn test_set_1_official_vectors() {
         let ki  = AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap();
-        let opc = OpCode::from_hex("cd63cb71954a9f4e48a5994e37a02baf").unwrap();
+        let opc = crate::keys::OpCode::from_hex("cd63cb71954a9f4e48a5994e37a02baf").unwrap();
+        let sqn = Sqn::from_bytes(&[0xFF, 0x9B, 0xB4, 0xD0, 0xB6, 0x07]);
+        let amf = Amf([0xB9, 0xB9]);
         let _ctx = MilenageContext::new(ki, opc);
-        // TODO: fix RAND and SQN, call generate_vector, check AUTN/XRES/CK/IK
+        let _    = (sqn, amf);
+        // TODO: call generate_vector, assert AUTN, XRES, CK, IK match spec
     }
 
     #[test]
-    fn verify_res_constant_time_correct() {
+    fn verify_res_accepts_matching() {
         let xres = [0xA5u8, 0x42, 0x11, 0xD5, 0xE3, 0xBA, 0x50, 0xBF];
         assert!(MilenageContext::verify_res(&xres, &xres));
     }
@@ -141,8 +144,15 @@ mod tests {
     }
 
     #[test]
+    fn verify_res_rejects_off_by_one() {
+        let xres  = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08];
+        let close = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xFF];
+        assert!(!MilenageContext::verify_res(&xres, &close));
+    }
+
+    #[test]
     fn generate_rand_not_all_zeros() {
-        // Probabilistic — chance of failure is 2^-128, negligible.
+        // Probabilistic — failure probability 2^-128, negligible.
         let r = MilenageContext::generate_rand();
         assert_ne!(r.0, [0u8; 16]);
     }
