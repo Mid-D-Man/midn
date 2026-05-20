@@ -1,0 +1,254 @@
+<!-- .github/midn-ci-dashboard.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Midn Core — CI Dashboard</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117; color: #e6edf3;
+      min-height: 100vh; padding: 40px 24px;
+    }
+    .container { max-width: 960px; margin: 0 auto; }
+
+    header { border-bottom: 2px solid #3fb950; padding-bottom: 18px; margin-bottom: 32px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; color: #3fb950; }
+    header h1 span { color: #e6edf3; }
+    header p { color: #484f58; font-size: 0.82rem; margin-top: 6px; }
+
+    .section-label {
+      font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.8px;
+      color: #484f58; margin-bottom: 12px; margin-top: 32px;
+      padding-bottom: 6px; border-bottom: 1px solid #21262d;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      background: #161b22; border: 1px solid #30363d; border-radius: 10px;
+      padding: 20px 18px; text-decoration: none; color: inherit;
+      transition: border-color .15s, background .15s;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .card:hover { border-color: #3fb950; background: #1c2128; }
+    .card-icon  { font-size: 1.6rem; line-height: 1; }
+    .card-title { font-size: 0.95rem; font-weight: 700; color: #e6edf3; }
+    .card-desc  { font-size: 0.72rem; color: #8b949e; flex: 1; }
+    .card-status {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 6px; font-size: 0.72rem;
+    }
+    .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .dot-green  { background: #3fb950; box-shadow: 0 0 5px #3fb950; }
+    .dot-red    { background: #f85149; box-shadow: 0 0 5px #f85149; }
+    .dot-yellow { background: #e3b341; }
+    .dot-grey   { background: #484f58; }
+
+    .badge {
+      display: inline-block; font-size: 0.63rem; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.4px;
+      padding: 2px 7px; border-radius: 4px; margin-top: auto;
+    }
+    .badge-active  { background: #0f2a1a; color: #3fb950; border: 1px solid #2ea043; }
+    .badge-phase2  { background: #1a1500; color: #e3b341; border: 1px solid #5a4500; }
+    .badge-phase3  { background: #0f1e3a; color: #79c0ff; border: 1px solid #1f4080; }
+    .badge-kernel  { background: #1c0f2a; color: #d2a8ff; border: 1px solid #6e40c9; }
+
+    .perf-table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    .perf-table th { padding: 8px 14px; text-align: left; color: #484f58;
+      font-size: 0.70rem; text-transform: uppercase; letter-spacing: 0.5px;
+      border-bottom: 1px solid #30363d; background: #0d1117; }
+    .perf-table td { padding: 9px 14px; border-bottom: 1px solid #21262d; }
+    .perf-table tr:last-child td { border-bottom: none; }
+    .perf-val { font-family: monospace; font-weight: 700; color: #3fb950; }
+
+    .commit-note {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 14px 18px; font-size: 0.82rem; color: #8b949e;
+    }
+    .commit-note code {
+      background: #21262d; border: 1px solid #30363d; border-radius: 4px;
+      padding: 2px 6px; font-family: monospace; color: #e6edf3; font-size: 0.80rem;
+    }
+    .commit-note .gate-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    .gate-chip {
+      background: #21262d; border: 1px solid #30363d; border-radius: 6px;
+      padding: 5px 12px; font-family: monospace; font-size: 0.78rem; color: #3fb950;
+    }
+
+    footer {
+      margin-top: 48px; font-size: 0.72rem; color: #484f58;
+      text-align: center; padding-top: 14px; border-top: 1px solid #21262d;
+    }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <h1>📡 Midn Core <span>— CI Dashboard</span></h1>
+    <p>Experimental LTE/5G Core Network · Rust · All crate test results in one place</p>
+  </header>
+
+  <!-- ── Performance targets ─────────────────────────────────────────────── -->
+  <div class="section-label">Performance Targets</div>
+  <div style="background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden">
+    <table class="perf-table">
+      <thead><tr><th>Subsystem</th><th>Target</th><th>Measured by</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>Milenage auth vector</td>
+          <td class="perf-val">&lt; 10 µs</td>
+          <td>cargo bench -p midn-auth</td>
+          <td><span style="color:#e3b341;font-size:.72rem">⚠ Stubbed (Phase 1)</span></td>
+        </tr>
+        <tr>
+          <td>GTP-U header parse</td>
+          <td class="perf-val">&lt; 500 ns</td>
+          <td>cargo bench -p midn-proto</td>
+          <td><span style="color:#3fb950;font-size:.72rem">✓ Parser complete</span></td>
+        </tr>
+        <tr>
+          <td>ECS subscriber spawn</td>
+          <td class="perf-val">&lt; 1 µs</td>
+          <td>unit tests (stress)</td>
+          <td><span style="color:#e3b341;font-size:.72rem">⚠ Phase 2</span></td>
+        </tr>
+        <tr>
+          <td>Concurrent sessions</td>
+          <td class="perf-val">100k+</td>
+          <td>stress tests</td>
+          <td><span style="color:#e3b341;font-size:.72rem">⚠ Phase 2</span></td>
+        </tr>
+        <tr>
+          <td>XDP packet decision</td>
+          <td class="perf-val">&lt; 200 ns</td>
+          <td>kernel perf counters</td>
+          <td><span style="color:#484f58;font-size:.72rem">— Phase 3</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- ── Crate results ────────────────────────────────────────────────────── -->
+  <div class="section-label">Crate Test Results</div>
+  <div class="grid">
+
+    <a class="card" href="midn-auth/" id="card-midn-auth">
+      <div class="card-icon">🔐</div>
+      <div class="card-title">midn-auth</div>
+      <div class="card-desc">Milenage / TUAK · AKA procedure · Ki + OPc · constant-time</div>
+      <div class="card-status" id="status-midn-auth">
+        <div class="dot dot-grey"></div>
+        <span>Loading…</span>
+      </div>
+      <span class="badge badge-active">Phase 1 — Active</span>
+    </a>
+
+    <a class="card" href="midn-proto/" id="card-midn-proto">
+      <div class="card-icon">📦</div>
+      <div class="card-title">midn-proto</div>
+      <div class="card-desc">NAS · S1AP · NGAP · GTP-U zero-copy parser</div>
+      <div class="card-status" id="status-midn-proto">
+        <div class="dot dot-grey"></div>
+        <span>Loading…</span>
+      </div>
+      <span class="badge badge-phase2">Phase 2</span>
+    </a>
+
+    <a class="card" href="midn-core/" id="card-midn-core">
+      <div class="card-icon">🧩</div>
+      <div class="card-title">midn-core</div>
+      <div class="card-desc">MME / AMF state machine · ECS subscriber registry · 100k sessions</div>
+      <div class="card-status" id="status-midn-core">
+        <div class="dot dot-grey"></div>
+        <span>Loading…</span>
+      </div>
+      <span class="badge badge-phase2">Phase 2</span>
+    </a>
+
+    <a class="card" href="midn-userplane/" id="card-midn-userplane">
+      <div class="card-icon">🚀</div>
+      <div class="card-title">midn-userplane</div>
+      <div class="card-desc">UPF routing · GTP-U tunnel manager · eBPF/XDP loader (Linux)</div>
+      <div class="card-status" id="status-midn-userplane">
+        <div class="dot dot-grey"></div>
+        <span>Loading…</span>
+      </div>
+      <span class="badge badge-phase3">Phase 3</span>
+    </a>
+
+    <div class="card" style="opacity:.5;cursor:not-allowed">
+      <div class="card-icon">⚡</div>
+      <div class="card-title">midn-userplane-ebpf</div>
+      <div class="card-desc">Kernel XDP program · no_std · bpf-linker · Linux ≥ 5.8</div>
+      <div class="card-status">
+        <div class="dot dot-grey"></div>
+        <span style="color:#484f58">Phase 3 — nightly only</span>
+      </div>
+      <span class="badge badge-kernel">Kernel Space</span>
+    </div>
+
+  </div>
+
+  <!-- ── How to trigger ──────────────────────────────────────────────────── -->
+  <div class="section-label">How to Trigger Tests</div>
+  <div class="commit-note">
+    <div>Include one of these tokens in your commit message or PR title.
+      <code>workflow_dispatch</code> from the Actions tab always runs all crates.</div>
+    <div class="gate-row">
+      <span class="gate-chip">--midn-auth</span>
+      <span class="gate-chip">--midn-proto</span>
+      <span class="gate-chip">--midn-core</span>
+      <span class="gate-chip">--midn-userplane</span>
+      <span class="gate-chip">--midn-all</span>
+    </div>
+    <div style="margin-top:10px">
+      Benchmarks are manual-only:
+      <code>Actions → midn-core: Benchmarks → Run workflow</code>
+    </div>
+  </div>
+
+  <footer>Midn Core · Experimental LTE/5G Core · MIT</footer>
+</div>
+
+<script>
+const crates = [
+  { name: 'midn-auth',      jsonFile: 'midn-auth/midn-auth-test-results.json'           },
+  { name: 'midn-proto',     jsonFile: 'midn-proto/midn-proto-test-results.json'         },
+  { name: 'midn-core',      jsonFile: 'midn-core/midn-core-test-results.json'           },
+  { name: 'midn-userplane', jsonFile: 'midn-userplane/midn-userplane-test-results.json' },
+];
+
+crates.forEach(({ name, jsonFile }) => {
+  fetch(jsonFile)
+    .then(r => { if (!r.ok) throw new Error(); return r.json(); })
+    .then(data => {
+      const el    = document.getElementById(`status-${name}`);
+      if (!el) return;
+      const s     = data.summary;
+      const allOk = s.failed === 0 && s.total > 0;
+      const noData = s.total === 0;
+      const dot   = noData ? 'dot-grey' : (allOk ? 'dot-green' : 'dot-red');
+      const label = noData
+        ? `No tests yet — Build #${data.build}`
+        : allOk
+          ? `${s.passed} passed — Build #${data.build}`
+          : `${s.failed} failed · ${s.passed} passed — Build #${data.build}`;
+      el.innerHTML = `<div class="dot ${dot}"></div><span>${label}</span>`;
+    })
+    .catch(() => {
+      const el = document.getElementById(`status-${name}`);
+      if (el) el.innerHTML = `<div class="dot dot-grey"></div><span style="color:#484f58">No results yet</span>`;
+    });
+});
+</script>
+</body>
+  </html>
