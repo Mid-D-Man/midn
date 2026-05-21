@@ -1,0 +1,99 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling zerocopy v0.8.48
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.186
+   Compiling syn v2.0.117
+   Compiling serde_core v1.0.228
+   Compiling crossbeam-utils v0.8.21
+   Compiling zerocopy-derive v0.8.48
+   Compiling zmij v1.0.21
+   Compiling autocfg v1.5.0
+   Compiling serde v1.0.228
+   Compiling num-traits v0.2.19
+   Compiling serde_derive v1.0.228
+   Compiling crossbeam-epoch v0.9.18
+   Compiling getrandom v0.2.17
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling serde_json v1.0.149
+   Compiling rand_core v0.6.4
+   Compiling crossbeam-deque v0.8.6
+   Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling plotters-backend v0.3.7
+   Compiling clap_lex v1.1.0
+   Compiling anstyle v1.0.14
+   Compiling itoa v1.0.18
+   Compiling ciborium-io v0.2.2
+   Compiling regex-syntax v0.8.10
+   Compiling memchr v2.8.0
+   Compiling regex-automata v0.4.14
+   Compiling ciborium-ll v0.2.2
+   Compiling clap_builder v4.6.0
+   Compiling plotters-svg v0.3.7
+   Compiling rand_chacha v0.3.1
+   Compiling itertools v0.10.5
+   Compiling zeroize_derive v1.4.3
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling walkdir v2.5.0
+   Compiling zeroize v1.8.2
+   Compiling rayon v1.12.0
+   Compiling criterion-plot v0.5.0
+   Compiling rand v0.8.6
+   Compiling plotters v0.3.7
+   Compiling clap v4.6.1
+   Compiling regex v1.12.3
+   Compiling ciborium v0.2.2
+   Compiling tinytemplate v1.2.1
+   Compiling is-terminal v0.4.17
+   Compiling subtle v2.6.1
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling hex v0.4.3
+   Compiling once_cell v1.21.4
+   Compiling midn-auth v0.1.0 (/home/runner/work/midn/midn/crates/midn-auth)
+   Compiling criterion v0.5.1
+    Finished `release` profile [optimized] target(s) in 43.01s
+     Running unittests src/lib.rs (target/release/deps/midn_auth-0b79cd563920f2a4)
+
+running 9 tests
+test keys::tests::auth_key_from_hex_rejects_short ... ok
+test keys::tests::auth_key_from_hex_roundtrip ... ok
+test keys::tests::sqn_increment_wraps ... ok
+test keys::tests::sqn_round_trip ... ok
+test milenage::tests::generate_rand_not_all_zeros ... ok
+test milenage::tests::test_set_1_official_vectors ... ignored, Phase 1 implementation required — un-ignore when f1..f5 are done
+test milenage::tests::verify_res_accepts_matching ... ok
+test milenage::tests::verify_res_rejects_off_by_one ... ok
+test milenage::tests::verify_res_rejects_wrong ... ok
+
+successes:
+
+successes:
+    keys::tests::auth_key_from_hex_rejects_short
+    keys::tests::auth_key_from_hex_roundtrip
+    keys::tests::sqn_increment_wraps
+    keys::tests::sqn_round_trip
+    milenage::tests::generate_rand_not_all_zeros
+    milenage::tests::verify_res_accepts_matching
+    milenage::tests::verify_res_rejects_off_by_one
+    milenage::tests::verify_res_rejects_wrong
+
+test result: ok. 8 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midn_auth
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,327 @@
+<!-- .github/midn-test-template.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>midn-core — Test Results · Build #11</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0d1117; color: #e6edf3;
+      padding: 32px 24px; min-height: 100vh;
+    }
+    .container { max-width: 1100px; margin: 0 auto; }
+
+    header { border-bottom: 2px solid #3fb950; padding-bottom: 18px; margin-bottom: 28px; }
+    header h1 { font-size: 1.9rem; color: #3fb950; }
+    header h1 span { color: #e6edf3; }
+    header p { color: #8b949e; margin-top: 5px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+    .meta-item { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      padding: 5px 12px; font-size: 0.82rem; }
+    .meta-item strong { color: #3fb950; }
+
+    .nav-links { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 18px; }
+    .nav-link { display: inline-flex; align-items: center; gap: 5px; color: #8b949e;
+      font-size: 0.80rem; text-decoration: none; padding: 5px 12px;
+      background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+      transition: color .15s, border-color .15s; }
+    .nav-link:hover { color: #e6edf3; border-color: #8b949e; }
+
+    .banner { border-radius: 8px; padding: 14px 20px; margin-bottom: 24px;
+      font-weight: 600; font-size: 0.95rem; }
+    .banner.pass    { background: #0f2a1a; border: 1px solid #2ea043; color: #3fb950; }
+    .banner.fail    { background: #2a0f0f; border: 1px solid #f85149; color: #f85149; }
+    .banner.loading { background: #1c2128; border: 1px solid #30363d; color: #8b949e; }
+
+    .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px; margin-bottom: 28px; }
+    .stat-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 14px 16px; }
+    .stat-card .s-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.6px;
+      color: #484f58; margin-bottom: 6px; }
+    .stat-card .s-value { font-size: 1.5rem; font-weight: 700; }
+    .stat-card .s-sub   { font-size: 0.72rem; color: #8b949e; margin-top: 2px; }
+
+    .toolbar { display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+    .toolbar-title { font-size: 1rem; font-weight: 700;
+      border-left: 3px solid #3fb950; padding-left: 10px; }
+    .toolbar-right { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+
+    .filter-row { display: flex; gap: 6px; flex-wrap: wrap; }
+    .filter-btn { background: #21262d; border: 1px solid #30363d; color: #8b949e;
+      padding: 5px 14px; border-radius: 6px; font-size: 0.80rem; cursor: pointer; transition: all 0.15s; }
+    .filter-btn:hover { border-color: #8b949e; color: #e6edf3; }
+    .filter-btn.active { border-color: #3fb950; color: #3fb950;
+      background: rgba(63,185,80,0.1); font-weight: 600; }
+
+    .search-wrap { position: relative; }
+    .search-box { background: #21262d; border: 1px solid #30363d; color: #e6edf3;
+      padding: 6px 32px 6px 12px; border-radius: 6px; font-size: 0.82rem; outline: none;
+      transition: border-color 0.15s; width: 260px; }
+    .search-box:focus { border-color: #3fb950; }
+    .search-box::placeholder { color: #484f58; }
+    .search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      background: none; border: none; color: #484f58; cursor: pointer; font-size: 0.85rem;
+      display: none; padding: 2px 4px; }
+    .search-clear:hover { color: #8b949e; }
+    .search-clear.visible { display: block; }
+
+    .suite { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      margin-bottom: 16px; overflow: hidden; }
+    .suite-header { display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px; cursor: pointer; user-select: none; transition: background 0.15s; }
+    .suite-header:hover { background: #1c2128; }
+    .suite-chevron { color: #484f58; font-size: 0.8rem; transition: transform 0.2s; }
+    .suite.open .suite-chevron { transform: rotate(90deg); }
+    .suite-name { font-weight: 700; font-size: 0.95rem; flex: 1; }
+    .suite-meta { font-size: 0.78rem; color: #8b949e; }
+    .suite-body { display: none; border-top: 1px solid #30363d; }
+    .suite.open .suite-body { display: block; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+    thead th { padding: 8px 14px; text-align: left; color: #484f58; font-size: 0.70rem;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      border-bottom: 1px solid #30363d; background: #0d1117; white-space: nowrap; }
+    tbody tr { border-bottom: 1px solid #21262d; transition: background 0.1s; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover td { background: #1c2128; }
+    td { padding: 9px 14px; vertical-align: middle; }
+
+    .pass-badge { background: rgba(63,185,80,.15); border: 1px solid #2ea043;
+      color: #3fb950; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+    .fail-badge { background: rgba(248,81,73,.15); border: 1px solid #f85149;
+      color: #f85149; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+    .skip-badge { background: rgba(227,179,65,.12); border: 1px solid rgba(227,179,65,.4);
+      color: #e3b341; font-size: .72rem; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+
+    .test-name { font-family: 'SFMono-Regular', Consolas, monospace; font-size: 0.80rem; }
+    .duration  { color: #484f58; font-size: 0.75rem; font-family: monospace; }
+    .expand-btn { background: none; border: 1px solid #30363d; color: #484f58;
+      padding: 2px 7px; border-radius: 4px; font-size: .70rem; cursor: pointer; }
+    .expand-btn:hover { border-color: #8b949e; color: #8b949e; }
+    tr.detail-row td { padding: 0; }
+    .detail-inner { padding: 12px 16px; background: #0d1117; border-top: 1px solid #21262d; display: none; }
+    .detail-inner.open { display: block; }
+    pre.output-block { font-family: 'SFMono-Regular', Consolas, monospace;
+      font-size: 0.73rem; color: #8b949e; background: #0d1117; border: 1px solid #21262d;
+      border-radius: 6px; padding: 10px 12px; overflow-x: auto;
+      max-height: 200px; overflow-y: auto; white-space: pre; }
+    .no-results { text-align: center; padding: 32px; color: #484f58; font-size: 0.85rem; }
+    .hidden { display: none !important; }
+    .toast { position: fixed; bottom: 24px; right: 24px; background: #161b22;
+      border: 1px solid #3fb950; color: #3fb950; padding: 10px 18px; border-radius: 8px;
+      font-size: .82rem; font-weight: 600; z-index: 9999;
+      transform: translateY(80px); opacity: 0; transition: all .25s ease; pointer-events: none; }
+    .toast.show { transform: translateY(0); opacity: 1; }
+    footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #30363d;
+      color: #484f58; font-size: .76rem; text-align: center; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <div class="nav-links">
+    <a class="nav-link" href="../">🏠 Dashboard</a>
+  </div>
+
+  <header>
+    <h1>midn-core <span>— Test Results</span></h1>
+    <p>Midn Core · Experimental LTE/5G Core Network · Build #11</p>
+    <div class="meta">
+      <div class="meta-item"><strong>Build:</strong> #11</div>
+      <div class="meta-item"><strong>Branch:</strong> main</div>
+      <div class="meta-item"><strong>Commit:</strong> 7190deb4</div>
+      <div class="meta-item"><strong>Date:</strong> Thu May 21 03:35:42 UTC 2026</div>
+      <div class="meta-item"><strong>Rust:</strong> rustc 1.95.0 (59807616e 2026-04-14)</div>
+    </div>
+  </header>
+
+  <div class="banner loading" id="banner">⏳ Loading test results…</div>
+
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="s-label">Total</div>
+      <div class="s-value" id="s-total">—</div>
+      <div class="s-sub">tests</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Passed</div>
+      <div class="s-value" id="s-passed" style="color:#3fb950">—</div>
+      <div class="s-sub">✓</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Failed</div>
+      <div class="s-value" id="s-failed" style="color:#f85149">—</div>
+      <div class="s-sub">✗</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Ignored</div>
+      <div class="s-value" id="s-ignored" style="color:#e3b341">—</div>
+      <div class="s-sub">—</div>
+    </div>
+    <div class="stat-card">
+      <div class="s-label">Duration</div>
+      <div class="s-value" id="s-duration" style="font-size:1.1rem">—</div>
+      <div class="s-sub">seconds</div>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <div class="toolbar-title">Test Suites</div>
+    <div class="toolbar-right">
+      <div class="filter-row">
+        <span style="font-size:0.78rem;color:#484f58;align-self:center">Filter:</span>
+        <button class="filter-btn active" data-filter="all"     onclick="setFilter('all')">All</button>
+        <button class="filter-btn"        data-filter="passed"  onclick="setFilter('passed')">Passed</button>
+        <button class="filter-btn"        data-filter="failed"  onclick="setFilter('failed')">Failed</button>
+        <button class="filter-btn"        data-filter="ignored" onclick="setFilter('ignored')">Ignored</button>
+      </div>
+      <div class="search-wrap">
+        <input class="search-box" id="search-box" placeholder="🔍 Search tests…" oninput="applySearch()" />
+        <button class="search-clear" id="search-clear" onclick="clearSearch()">✕</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="suites-container"></div>
+  <div class="no-results hidden" id="no-results">No tests match your filter.</div>
+  <footer>midn-core — Midn Core — Build #11</footer>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+let currentFilter = 'all';
+
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function badge(status) {
+  if (status==='passed')  return '<span class="pass-badge">✓ PASS</span>';
+  if (status==='ignored') return '<span class="skip-badge">— SKIP</span>';
+  return '<span class="fail-badge">✗ FAIL</span>';
+}
+function toggleDetail(id) { document.getElementById(id)?.classList.toggle('open'); }
+function toggleSuite(h)   { h.closest('.suite').classList.toggle('open'); }
+
+function renderAll(data) {
+  const allOk  = data.summary.failed === 0;
+  const banner = document.getElementById('banner');
+  banner.className = 'banner ' + (allOk ? 'pass' : 'fail');
+  banner.textContent = allOk
+    ? `✅ All ${data.summary.passed} tests passed — Build #${data.build}`
+    : `❌ ${data.summary.failed} test(s) FAILED — ${data.summary.passed} passed — Build #${data.build}`;
+  document.getElementById('s-total').textContent    = data.summary.total;
+  document.getElementById('s-passed').textContent   = data.summary.passed;
+  document.getElementById('s-failed').textContent   = data.summary.failed;
+  document.getElementById('s-ignored').textContent  = data.summary.ignored;
+  document.getElementById('s-duration').textContent = data.summary.duration_s.toFixed(2) + 's';
+  renderSuites(data.suites);
+}
+
+function renderSuites(suites) {
+  const container = document.getElementById('suites-container');
+  container.innerHTML = '';
+  suites.forEach((suite, si) => {
+    const div = document.createElement('div');
+    div.className = 'suite open';
+    const pc = suite.tests.filter(t => t.status==='passed').length;
+    const fc = suite.tests.filter(t => t.status==='failed').length;
+    const ic = suite.tests.filter(t => t.status==='ignored').length;
+    div.innerHTML = `
+      <div class="suite-header" onclick="toggleSuite(this)">
+        <span class="suite-chevron">▶</span>
+        <span class="suite-name">${esc(suite.name)}</span>
+        <span class="suite-meta">${pc} passed · ${fc} failed · ${ic} ignored</span>
+      </div>
+      <div class="suite-body">
+        <table>
+          <thead><tr>
+            <th>Test Name</th><th style="width:90px">Status</th>
+            <th style="width:90px">Duration</th><th style="width:60px">Output</th>
+          </tr></thead>
+          <tbody id="tbody-${si}"></tbody>
+        </table>
+      </div>`;
+    const tbody = div.querySelector(`#tbody-${si}`);
+    suite.tests.forEach((test, ti) => {
+      const hasOutput = !!(test.output && test.output.trim());
+      const tr = document.createElement('tr');
+      tr.className = 'test-row';
+      tr.dataset.status = test.status;
+      tr.dataset.name   = test.name.toLowerCase();
+      tr.innerHTML = `
+        <td><span class="test-name">${esc(test.name)}</span></td>
+        <td>${badge(test.status)}</td>
+        <td class="duration">${test.duration_ms}ms</td>
+        <td>${hasOutput
+          ? `<button class="expand-btn" onclick="toggleDetail('out-${si}-${ti}')">↕ Show</button>`
+          : '<span style="color:#484f58;font-size:.72rem">—</span>'}</td>`;
+      tbody.appendChild(tr);
+      if (hasOutput) {
+        const dr = document.createElement('tr');
+        dr.className = 'detail-row';
+        dr.dataset.status = test.status;
+        dr.dataset.name   = test.name.toLowerCase();
+        dr.innerHTML = `<td colspan="4"><div class="detail-inner" id="out-${si}-${ti}">
+          <pre class="output-block" style="${test.status==='failed'?'color:#f85149':''}">${esc(test.output)}</pre>
+        </div></td>`;
+        tbody.appendChild(dr);
+      }
+    });
+    container.appendChild(div);
+  });
+  applyFilter(); applySearch();
+}
+
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.toggle('active', b.dataset.filter===f));
+  applyFilter();
+}
+function applyFilter() {
+  document.querySelectorAll('.test-row').forEach(row => {
+    const show = currentFilter==='all' || row.dataset.status===currentFilter;
+    row.classList.toggle('hidden', !show);
+    const d = row.nextElementSibling;
+    if (d?.classList.contains('detail-row')) d.classList.toggle('hidden', !show);
+  });
+  checkNoResults();
+}
+function clearSearch() {
+  document.getElementById('search-box').value = '';
+  document.getElementById('search-clear').classList.remove('visible');
+  applySearch();
+}
+function applySearch() {
+  const q = document.getElementById('search-box').value.toLowerCase().trim();
+  document.getElementById('search-clear').classList.toggle('visible', q.length > 0);
+  document.querySelectorAll('.test-row').forEach(row => {
+    const show = (!q || row.dataset.name.includes(q)) &&
+                 (currentFilter==='all' || row.dataset.status===currentFilter);
+    row.classList.toggle('hidden', !show);
+    const d = row.nextElementSibling;
+    if (d?.classList.contains('detail-row')) d.classList.toggle('hidden', !show);
+  });
+  checkNoResults();
+}
+function checkNoResults() {
+  document.getElementById('no-results').classList.toggle(
+    'hidden', document.querySelectorAll('.test-row:not(.hidden)').length > 0);
+}
+
+// Derive the JSON file name from the crate placeholder filled in by the workflow.
+const CRATE = 'midn-core';
+fetch(`${CRATE}-test-results.json`)
+  .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+  .then(data => renderAll(data))
+  .catch(err => {
+    const banner = document.getElementById('banner');
+    banner.className = 'banner fail';
+    banner.textContent = `❌ Failed to load ${CRATE}-test-results.json: ${err.message}`;
+  });
+</script>
+</body>
+  </html>

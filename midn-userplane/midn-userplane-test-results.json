@@ -1,0 +1,62 @@
+{
+  "build": "11",
+  "branch": "main",
+  "commit": "7190deb4",
+  "date": "",
+  "rust_version": "rustc 1.95.0 (59807616e 2026-04-14)",
+  "crate": "midn-userplane",
+  "summary": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "duration_s": 0.0
+  },
+  "suites": [
+    {
+      "name": "lib (unit tests)",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "upf::routing::tests::install_and_lookup_bidirectional",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "upf::routing::tests::lookup_miss_returns_none",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "upf::routing::tests::remove_cleans_both_maps",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "upf::tunnel::tests::create_and_destroy_tunnel",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "upf::routing::tests::large_table_no_collisions",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "upf::tunnel::tests::teid_allocation_is_unique",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    }
+  ]
+}
