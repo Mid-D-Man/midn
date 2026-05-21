@@ -1,19 +1,20 @@
 [package]
-name = "midn-core"
+name    = "midn-core"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
 name = "midn_core"
-crate-type = ["lib"]
 
 [dependencies]
 midn-auth  = { path = "../midn-auth" }
 midn-proto = { path = "../midn-proto" }
+zeroize    = { version = "1.8", features = ["derive"] }   # ← was missing
 tokio      = { version = "1", features = ["full"] }
 thiserror  = "1.0"
 tracing    = "0.1"
-# mid-math = { workspace = true }  # uncomment after configuring workspace dep
+# Uncomment after setting workspace dep in root Cargo.toml:
+# mid-math = { workspace = true }
 
 [dev-dependencies]
 tokio-test = "0.4"
