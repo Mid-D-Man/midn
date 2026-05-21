@@ -32,20 +32,20 @@
 //! 3. `AttachProcedure::handle_security_mode_complete` — create session
 //! 4. `AttachProcedure::handle_attach_complete` — open data plane
 
-use crate::ecs::components::{AuthFailReason, AuthState};
-use crate::ecs::world::{CoreWorld, EntityId};
+use crate::ecs::components::AuthFailReason;
 
-/// Per-subscriber attach procedure state.
+/// Per-subscriber attach procedure state machine.
 ///
 /// Tracks where in the attach sequence a particular UE is.
+/// Created when InitialUeMessage arrives, destroyed on AttachComplete or failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AttachProcedureState {
-    /// Initial state: Attach Request received, not yet authenticated.
+    /// Attach Request received — waiting to dispatch auth challenge.
     AwaitingAuthentication {
         enb_ue_s1ap_id: u32,
         mme_ue_s1ap_id: u32,
     },
-    /// Auth challenge sent (RAND, AUTN) — awaiting UE's RES.
+    /// Auth challenge sent (RAND, AUTN) — waiting for UE's RES.
     AwaitingAuthResponse {
         enb_ue_s1ap_id: u32,
         mme_ue_s1ap_id: u32,
@@ -55,24 +55,28 @@ pub enum AttachProcedureState {
         enb_ue_s1ap_id: u32,
         mme_ue_s1ap_id: u32,
     },
-    /// Security mode active — Attach Accept sent, awaiting Attach Complete.
+    /// Security mode active — Attach Accept sent, waiting for Attach Complete.
     AwaitingAttachComplete {
         enb_ue_s1ap_id: u32,
         mme_ue_s1ap_id: u32,
     },
-    /// Attach complete — subscriber online.
+    /// Attach complete — subscriber online, data plane active.
     Attached,
-    /// Procedure failed.
+    /// Procedure failed — reason recorded for logging and metrics.
     Failed(AttachFailReason),
 }
 
 /// Reason for attach failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttachFailReason {
+    /// RES did not match XRES, or MAC verification failed.
     AuthFailed(AuthFailReason),
+    /// IMSI not found in HSS / subscriber database.
     ImsiNotFound,
+    /// Internal error (auth vector generation, ECS world full, etc.).
     InternalError,
 }
 
-// TODO Phase 2: implement AttachProcedure struct with handle_* methods.
-// Each method takes &mut CoreWorld and returns the next S1AP/NAS messages to send.
+// TODO Phase 2: implement AttachProcedure with handle_* methods.
+// Each method takes (&mut CoreWorld, &mut ImsiRegistry) and returns
+// the next S1AP / NAS messages to send back to the eNodeB.
