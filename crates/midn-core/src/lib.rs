@@ -24,10 +24,14 @@
 //! ```
 
 pub mod ecs;
+pub mod hss;
 pub mod mme;
 pub mod amf;
 
-pub use ecs::components::{AuthState, ImsiComponent, SecurityContext, SessionState, TunnelComponent};
+pub use ecs::components::{
+    AuthFailReason, AuthState, ImsiComponent, SecurityContext, SessionState, TunnelComponent,
+};
 pub use ecs::registry::ImsiRegistry;
 pub use ecs::world::{CoreWorld, EntityId};
+pub use hss::Hss;
 pub use mme::Mme;
