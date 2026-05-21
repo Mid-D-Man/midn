@@ -1,17 +1,18 @@
 [package]
-name = "midn-auth"
+name    = "midn-auth"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "midn_auth"
+name       = "midn_auth"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [dependencies]
-zeroize  = { version = "1.8", features = ["derive"] }
-subtle   = "2.5"
-rand     = { version = "0.8", features = ["getrandom"] }
-hex      = "0.4"
+zeroize = { version = "1.8", features = ["derive"] }
+subtle  = "2.5"
+rand    = { version = "0.8", features = ["getrandom"] }
+hex     = "0.4"
+aes     = { version = "0.8", features = ["zeroize"] }   # AES-128 for Milenage f1..f5
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
