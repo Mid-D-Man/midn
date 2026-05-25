@@ -2,13 +2,19 @@
 # Criterion benchmarks for Midn Core.
 #
 # Run manually: Actions → "midn-core: Benchmarks" → Run workflow
-# DO NOT add push/pull_request triggers — benches take 5-10 minutes.
+# DO NOT add push/pull_request triggers — benches take 10-20 minutes.
 #
 # Gates (per docs/platform-optimization.md):
-#   midn-auth  : verify_res_constant_time  < 25 ns   (constant-time; ~12-15 ns expected)
-#   midn-auth  : generate_rand_os_csprng   < 100 ns  (getrandom syscall; ~40-80 ns expected)
-#   midn-auth  : milenage_generate_vector  < 10 µs   (stub until Phase 1)
-#   midn-proto : GTP-U parse               < 500 ns  (Build #11: 1.88 ns — gate is conservative)
+#   midn-auth  : verify_res_constant_time  < 25 ns
+#   midn-auth  : generate_rand_os_csprng   < 100 ns
+#   midn-proto : GTP-U parse               < 500 ns  (actual: ~1.8 ns)
+#   midn-proto : NAS encode/decode         < 500 ns
+#   midn-proto : IMSI BCD                  < 100 ns
+#   midn-core  : ecs_spawn                 < 1 µs
+#   midn-core  : ecs_despawn_zeroize       < 5 µs
+#   midn-core  : registry_lookup           < 100 ns
+#   midn-userplane : routing_lookup        < 50 ns
+#   midn-userplane : tunnel_create         < 1 µs
 
 name: midn-core — Benchmarks
 
@@ -16,11 +22,11 @@ on:
   workflow_dispatch:
     inputs:
       note:
-        description: 'Context for this run (e.g. "post Milenage f1 impl")'
+        description: 'Context for this run'
         required: false
         default: 'manual benchmark run'
       crate:
-        description: 'Crate to bench (auth / proto / all)'
+        description: 'Crate to bench (auth / proto / core / userplane / all)'
         required: false
         default: 'all'
 
@@ -54,31 +60,33 @@ jobs:
           key: cargo-registry-midn-bench-${{ hashFiles('Cargo.toml') }}
           restore-keys: cargo-registry-
 
-      # ── midn-auth benchmarks ──────────────────────────────────────────────────
+      # ── midn-auth ─────────────────────────────────────────────────────────────
       - name: Bench midn-auth
         if: inputs.crate == 'all' || inputs.crate == 'auth'
         run: |
-          echo "=== midn-auth Criterion benchmarks ==="
-          echo "Note: ${{ inputs.note }}"
-          echo ""
-          echo "Gates:"
-          echo "  verify_res_constant_time  < 25 ns  (constant-time; tightening below 15 ns is wrong)"
-          echo "  generate_rand_os_csprng   < 100 ns (getrandom syscall)"
-          echo "  milenage_generate_vector  < 10 µs  (stub until Phase 1 — number is not real)"
-          echo ""
+          echo "=== midn-auth benchmarks ==="
           cargo bench --bench auth_bench -p midn-auth 2>&1 | tee bench-auth-raw.txt
 
-      # ── midn-proto benchmarks ─────────────────────────────────────────────────
+      # ── midn-proto ────────────────────────────────────────────────────────────
       - name: Bench midn-proto
         if: inputs.crate == 'all' || inputs.crate == 'proto'
         run: |
-          echo "=== midn-proto Criterion benchmarks ==="
-          echo "Note: ${{ inputs.note }}"
-          echo ""
-          echo "Gates:"
-          echo "  GTP-U parse < 500 ns  (Build #11 baseline: 1.88 ns — gate is intentionally conservative)"
-          echo ""
+          echo "=== midn-proto benchmarks (GTP-U + NAS codec) ==="
           cargo bench --bench proto_bench -p midn-proto 2>&1 | tee bench-proto-raw.txt
+
+      # ── midn-core ─────────────────────────────────────────────────────────────
+      - name: Bench midn-core
+        if: inputs.crate == 'all' || inputs.crate == 'core'
+        run: |
+          echo "=== midn-core benchmarks (ECS + HSS + registry) ==="
+          cargo bench --bench core_bench -p midn-core 2>&1 | tee bench-core-raw.txt
+
+      # ── midn-userplane ────────────────────────────────────────────────────────
+      - name: Bench midn-userplane
+        if: inputs.crate == 'all' || inputs.crate == 'userplane'
+        run: |
+          echo "=== midn-userplane benchmarks (routing + tunnel) ==="
+          cargo bench --bench userplane_bench -p midn-userplane 2>&1 | tee bench-userplane-raw.txt
 
       # ── Publish Step Summary ──────────────────────────────────────────────────
       - name: Publish benchmark summary
@@ -92,7 +100,7 @@ jobs:
             echo "**Note:** ${{ inputs.note }}"
             echo ""
             echo "> All numbers from Criterion at **[RELEASE]** opt-level 3, LTO=true."
-            echo "> Lower is better. Gate values from \`docs/platform-optimization.md\`."
+            echo "> Lower is better."
             echo ""
 
             python3 - << 'PYEOF'
@@ -104,50 +112,80 @@ jobs:
               re.MULTILINE,
           )
 
-          # Gates: bench_name_fragment → (display_threshold, display_unit, threshold_ns)
-          # verify_res: 25 ns (constant-time comparison — intentionally ~12-15 ns)
-          # gtpu:       500 ns (conservative; Build #11 actual: ~1.9 ns)
-          # milenage:   10000 ns (stub gate; real gate applies post Phase 1 impl)
-          # rand:       100 ns (getrandom syscall; ~40-80 ns expected)
+          # Gates: fragment → (threshold_display, unit, threshold_ns)
           GATES = {
+              # midn-auth
               'milenage_generate_vector':          (10_000, 'ns',  10_000),
               'verify_res_constant_time':          (25,     'ns',  25),
               'generate_rand_os_csprng':           (100,    'ns',  100),
+              # midn-proto GTP-U
               'gtpu_parser_gpdu_minimal':          (500,    'ns',  500),
               'gtpu_header_parse':                 (500,    'ns',  500),
               'gtpu_parser_gpdu_with_seq':         (500,    'ns',  500),
               'gtpu_header_serialize_round_trip':  (500,    'ns',  500),
+              # midn-proto NAS codec
+              'nas_encode_auth_request':           (500,    'ns',  500),
+              'nas_decode_auth_request':           (500,    'ns',  500),
+              'nas_encode_auth_response':          (500,    'ns',  500),
+              'nas_decode_auth_response':          (500,    'ns',  500),
+              'nas_encode_attach_request':         (1_000,  'ns',  1_000),
+              'nas_decode_attach_request':         (1_000,  'ns',  1_000),
+              'nas_auth_round_trip':               (1_000,  'ns',  1_000),
+              'nas_encode_sec_mode_cmd':           (500,    'ns',  500),
+              'nas_encode_attach_accept':          (1_000,  'ns',  1_000),
+              'nas_decode_attach_accept':          (1_000,  'ns',  1_000),
+              'nas_imsi_bcd_encode':               (100,    'ns',  100),
+              'nas_imsi_bcd_decode':               (100,    'ns',  100),
+              # midn-core ECS
+              'ecs_spawn':                         (1_000,  'ns',  1_000),
+              'ecs_spawn_with_all_components':     (5_000,  'ns',  5_000),
+              'ecs_despawn':                       (5_000,  'ns',  5_000),
+              'with_security_context_zeroize':     (5_000,  'ns',  5_000),
+              'ecs_lookup_auth_state':             (100,    'ns',  100),
+              'ecs_is_authenticated':              (100,    'ns',  100),
+              # midn-core registry
+              'registry_lookup_hit':               (100,    'ns',  100),
+              'registry_lookup_miss':              (100,    'ns',  100),
+              'registry_register':                 (500,    'ns',  500),
+              # midn-core HSS
+              'hss_provision_subscriber':          (1_000,  'ns',  1_000),
+              'hss_lookup_hit':                    (50,     'ns',  50),
+              'hss_lookup_miss':                   (50,     'ns',  50),
+              # midn-userplane routing
+              'routing_table_lookup_ul':           (50,     'ns',  50),
+              'routing_table_lookup_dl':           (50,     'ns',  50),
+              'routing_table_lookup_ul_miss':      (50,     'ns',  50),
+              'routing_table_install':             (500,    'ns',  500),
+              'routing_table_remove':              (500,    'ns',  500),
+              # midn-userplane tunnel
+              'tunnel_create':                     (1_000,  'ns',  1_000),
+              'tunnel_destroy':                    (500,    'ns',  500),
+          }
+
+          STUB_NOTES = {
+              'milenage_generate_vector': ' *(stub — not a real measurement)*',
           }
 
           def parse_time_to_ns(time_str):
               parts = time_str.strip().split()
-              if len(parts) != 2:
-                  return None
+              if len(parts) != 2: return None
               val, unit = float(parts[0]), parts[1].lower()
-              mul = {'ps': 0.001, 'ns': 1, 'µs': 1000, 'us': 1000, 'ms': 1_000_000, 's': 1_000_000_000}
+              mul = {'ps': 0.001, 'ns': 1, 'µs': 1000, 'us': 1000, 'ms': 1_000_000}
               return val * mul.get(unit, 1)
 
-          def gate_label(bench_name, mean_ns):
-              key = bench_name.lower().replace(' ', '_').replace('/', '_')
-              for fragment, (threshold, unit, threshold_ns) in GATES.items():
-                  if fragment in key:
-                      if mean_ns is None:
-                          return '—'
-                      if mean_ns <= threshold_ns:
-                          return f'✅ < {threshold} {unit}'
-                      else:
-                          return f'❌ > {threshold} {unit} — gate miss'
+          def gate_label(bench_key, mean_ns):
+              key = bench_key.lower().replace(' ', '_').replace('/', '_')
+              for frag, (thresh, unit, thresh_ns) in GATES.items():
+                  if frag in key:
+                      if mean_ns is None: return '—'
+                      return f'✅ < {thresh} {unit}' if mean_ns <= thresh_ns else f'❌ > {thresh} {unit}'
               return '—'
 
-          # Stub note: generate_vector is not implemented yet; the bench result
-          # measures black_box overhead only and should not be used for decisions.
-          STUB_NOTE = {
-              'milenage_generate_vector': ' *(stub — not a real measurement)*',
-          }
-
           raw_files = [
-              ('bench-auth-raw.txt',  'midn-auth'),
-              ('bench-proto-raw.txt', 'midn-proto'),
+              ('bench-auth-raw.txt',      'midn-auth'),
+              ('bench-proto-raw.txt',     'midn-proto'),
+              ('bench-core-raw.txt',      'midn-core'),
+              ('bench-userplane-raw.txt', 'midn-userplane'),
           ]
 
           for raw_file, crate_name in raw_files:
@@ -159,7 +197,7 @@ jobs:
               text    = RE_ANSI.sub('', raw)
               matches = list(RE_RESULT.finditer(text))
               if not matches:
-                  print(f"### {crate_name}\n\n*(No Criterion results — build may have failed)*\n")
+                  print(f"### {crate_name}\n\n*(No results)*\n")
                   continue
 
               print(f"### {crate_name}\n")
@@ -168,12 +206,11 @@ jobs:
 
               current_group = None
               for m in matches:
-                  name = m.group(1).strip()
-                  mean = m.group(3).strip()
-
+                  name  = m.group(1).strip()
+                  mean  = m.group(3).strip()
                   parts = name.split('/')
                   group = '/'.join(parts[:-1]) if len(parts) >= 2 else ''
-                  bench = parts[-1]           if len(parts) >= 2 else name
+                  bench = parts[-1]            if len(parts) >= 2 else name
 
                   if group and group != current_group:
                       print(f"| **{group}** | | |")
@@ -181,10 +218,9 @@ jobs:
 
                   mean_ns    = parse_time_to_ns(mean)
                   gate       = gate_label(name, mean_ns)
-                  stub_note  = STUB_NOTE.get(bench.lower().replace(' ', '_'), '')
+                  stub       = STUB_NOTES.get(bench.lower().replace(' ', '_'), '')
                   display    = f"&nbsp;&nbsp;{bench}" if group else bench
-
-                  print(f"| {display} | **{mean}**{stub_note} | {gate} |")
+                  print(f"| {display} | **{mean}**{stub} | {gate} |")
 
               print()
 
@@ -192,15 +228,14 @@ jobs:
 
             echo ""
             echo "---"
-            echo "### Gate Reference"
+            echo "### Phase Status"
             echo ""
-            echo "| Benchmark | Gate | Rationale |"
-            echo "|---|---|---|"
-            echo "| \`verify_res_constant_time\` | < 25 ns | \`subtle::ConstantTimeEq\` is intentionally ~12-15 ns; tightening is wrong |"
-            echo "| \`generate_rand_os_csprng\` | < 100 ns | getrandom(2) syscall; 40-80 ns expected |"
-            echo "| \`milenage_generate_vector\` | < 10 µs | stub gate — real measurement begins at Phase 1 |"
-            echo "| \`gtpu_parser_gpdu_minimal\` | < 500 ns | conservative; Build #11 actual: ~1.9 ns |"
-            echo "| \`gtpu_header_parse\` | < 500 ns | conservative; Build #11 actual: ~6.5 ns |"
+            echo "| Crate | Phase | Key Gate | Notes |"
+            echo "|---|---|---|---|"
+            echo "| \`midn-auth\` | 1 — active | Milenage < 10 µs | \`generate_vector\` stubbed; un-ignore test sets to close |"
+            echo "| \`midn-proto\` | 2 | GTP-U < 500 ns ✅, NAS < 500 ns | Parser + codec complete |"
+            echo "| \`midn-core\` | 2 | ECS spawn < 1 µs | Attach procedure wired — run gate test |"
+            echo "| \`midn-userplane\` | 2/3 | Routing lookup < 50 ns | Userspace routing done; XDP Phase 3 |"
 
           } >> $GITHUB_STEP_SUMMARY
 
@@ -213,5 +248,7 @@ jobs:
           path: |
             bench-auth-raw.txt
             bench-proto-raw.txt
+            bench-core-raw.txt
+            bench-userplane-raw.txt
             target/criterion/
           retention-days: 30
