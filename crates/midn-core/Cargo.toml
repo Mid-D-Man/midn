@@ -9,11 +9,12 @@ name = "midn_core"
 [dependencies]
 midn-auth  = { path = "../midn-auth" }
 midn-proto = { path = "../midn-proto" }
-zeroize    = { version = "1.8", features = ["derive"] }   # ← was missing
+zeroize    = { version = "1.8", features = ["derive"] }
+bytes      = "1.5"       # ← was missing; used in attach.rs and state_machine.rs
+hex        = "0.4"       # ← was missing; used in hss.rs for provision_hex
 tokio      = { version = "1", features = ["full"] }
 thiserror  = "1.0"
 tracing    = "0.1"
-# Uncomment after setting workspace dep in root Cargo.toml:
 # mid-math = { workspace = true }
 
 [dev-dependencies]
