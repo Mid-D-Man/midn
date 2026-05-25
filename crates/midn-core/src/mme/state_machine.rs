@@ -5,14 +5,15 @@ use std::collections::HashMap;
 use bytes::Bytes;
 
 use midn_proto::s1ap::messages::{
-    DownlinkNasTransport, S1apMessage, UplinkNasTransport,
+    DownlinkNasTransport, S1apMessage,
+    // UplinkNasTransport is only constructed in tests — imported there instead
 };
-use midn_proto::nas::codec::decode_nas;
 use midn_proto::nas::codec::{
     MT_ATTACH_REQUEST, MT_AUTHENTICATION_RESPONSE,
     MT_SECURITY_MODE_COMPLETE, MT_ATTACH_COMPLETE,
 };
 
+use crate::ecs::components::ImsiComponent;   // ← was missing
 use crate::ecs::registry::ImsiRegistry;
 use crate::ecs::world::CoreWorld;
 use crate::hss::Hss;
@@ -29,11 +30,11 @@ pub struct Mme {
     pub ip_pool:  IpPool,
 
     /// In-flight attach procedures keyed by MME-UE-S1AP-ID.
-    attach_ctxs:     HashMap<u32, AttachContext>,
+    attach_ctxs:    HashMap<u32, AttachContext>,
     /// Maps ENB-UE-S1AP-ID → MME-UE-S1AP-ID for uplink routing.
-    enb_to_mme_id:   HashMap<u32, u32>,
+    enb_to_mme_id:  HashMap<u32, u32>,
     /// Next MME-UE-S1AP-ID to assign.
-    next_mme_ue_id:  u32,
+    next_mme_ue_id: u32,
 }
 
 impl Mme {
@@ -77,7 +78,6 @@ impl Mme {
         enb_ue_s1ap_id: u32,
         nas_pdu:        Bytes,
     ) -> Vec<S1apMessage> {
-        // Peek at the NAS message type before handing off
         let msg_type = nas_pdu.get(1).copied().unwrap_or(0);
         if msg_type != MT_ATTACH_REQUEST {
             tracing::warn!(msg_type, "InitialUeMessage contains non-AttachRequest NAS PDU");
@@ -229,11 +229,14 @@ impl Mme {
 
 impl Default for Mme { fn default() -> Self { Self::new() } }
 
-// ── Integration test — Phase 2 gate ──────────────────────────────────────────
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // UplinkNasTransport only constructed in tests — import here, not at crate level
+    use midn_proto::s1ap::messages::UplinkNasTransport;
     use midn_proto::nas::codec::{
         encode_attach_request, encode_auth_response,
         encode_sec_mode_complete, encode_attach_complete,
@@ -242,23 +245,15 @@ mod tests {
 
     /// End-to-end LTE attach procedure.
     ///
-    /// This IS the Phase 2 gate test. If this passes, Phase 2 is done.
+    /// Phase 2 gate test. If this passes, Phase 2 is done.
     ///
-    /// Simulates the full UE↔MME exchange:
-    ///   UE: AttachRequest
-    ///   MME: AuthenticationRequest
-    ///   UE: AuthenticationResponse (with correct RES)
-    ///   MME: SecurityModeCommand
-    ///   UE: SecurityModeComplete
-    ///   MME: AttachAccept
-    ///   UE: AttachComplete
-    ///   → subscriber online
+    /// Drives the full 5-step UE↔MME exchange:
+    ///   AttachRequest → AuthenticationRequest
+    ///   AuthenticationResponse → SecurityModeCommand
+    ///   SecurityModeComplete → AttachAccept
+    ///   AttachComplete → subscriber online
     #[tokio::test]
     async fn test_full_attach_procedure_phase2_gate() {
-        // ── Test set 1 subscriber ─────────────────────────────────────────────
-        // Ki  = 465b5ce8b199b49faa5f0a2ee238a6bc
-        // OPc = cd63cb71954a9f4e48a5994e37a02baf
-        // (same values as 3GPP TS 35.207 Test Set 1)
         let imsi: u64 = 234_15_1234567890_u64;
 
         let mut mme = Mme::new();
@@ -268,7 +263,7 @@ mod tests {
             "cd63cb71954a9f4e48a5994e37a02baf",
         ).expect("valid test credentials");
 
-        // ── Step 1: UE → MME : AttachRequest ─────────────────────────────────
+        // Step 1: UE → MME : AttachRequest
         let attach_req_pdu = encode_attach_request(imsi, 0x01, 0x07);
         let responses = mme.process_s1ap(S1apMessage::InitialUeMessage(
             InitialUeMessage {
@@ -280,45 +275,28 @@ mod tests {
             }
         )).await;
 
-        // MME should respond with AuthenticationRequest
-        assert_eq!(responses.len(), 1, "MME should send one response to AttachRequest");
-        let auth_req_pdu = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => d.nas_pdu.clone(),
-            _ => panic!("Expected DownlinkNasTransport, got {:?}", responses[0]),
-        };
-        let mme_ue_s1ap_id = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => d.mme_ue_s1ap_id,
-            _ => panic!(),
+        assert_eq!(responses.len(), 1, "MME should send AuthenticationRequest");
+        let (mme_ue_s1ap_id, auth_req_pdu) = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(d) => (d.mme_ue_s1ap_id, d.nas_pdu.clone()),
+            _ => panic!("Expected DownlinkNasTransport"),
         };
 
-        // ── Step 2: Decode AuthRequest, compute correct RES ───────────────────
-        let auth_req_decoded = midn_proto::nas::codec::decode_nas(&auth_req_pdu)
-            .expect("should decode auth request");
-        let (rand, autn) = match auth_req_decoded {
-            midn_proto::nas::codec::NasPdu::AuthenticationRequest(d) => (d.rand, d.autn),
-            _ => panic!("Expected AuthenticationRequest"),
-        };
+        // Verify it decoded as an AuthenticationRequest
+        match midn_proto::nas::codec::decode_nas(&auth_req_pdu) {
+            Ok(midn_proto::nas::codec::NasPdu::AuthenticationRequest(_)) => {}
+            other => panic!("Expected AuthenticationRequest, got {other:?}"),
+        }
 
-        // The mock UE computes RES using its Ki and OPc.
-        // Since generate_vector is still todo!() this needs to be skipped for now.
-        // When Phase 1 completes, replace this with:
-        //   let ki  = midn_auth::keys::AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap();
-        //   let opc = midn_auth::keys::OpCode::from_hex("cd63cb71954a9f4e48a5994e37a02baf").unwrap();
-        //   let ctx = midn_auth::milenage::MilenageContext::new(ki, opc);
-        //   let res = <compute using same ki/opc/rand/sqn>
-
-        // For Phase 2 with stubbed Milenage: the MME stores XRES from generate_vector.
-        // We can retrieve it directly from the security context to simulate a correct UE.
-        let entity_id = *mme.registry.lookup(imsi).as_ref()
+        // Step 2: Simulate correct UE response.
+        // Retrieve the stored XRES directly (Milenage generate_vector is stubbed;
+        // replace with real UE-side computation once Phase 1 validates test sets).
+        let entity_id = mme.registry.lookup(imsi)
             .expect("IMSI should be registered after attach request");
-        let xres = {
-            // At this point pending_xres is still set (auth hasn't happened yet)
-            mme.world.security.get(&entity_id)
-                .map(|s| s.pending_xres)
-                .expect("security context should exist")
-        };
+        let xres = mme.world.security.get(&entity_id)
+            .map(|s| s.pending_xres)
+            .expect("security context should contain pending XRES");
 
-        // ── Step 3: UE → MME : AuthenticationResponse (with XRES as RES) ─────
+        // Step 3: UE → MME : AuthenticationResponse (with correct RES)
         let auth_resp_pdu = encode_auth_response(&xres);
         let responses = mme.process_s1ap(S1apMessage::UplinkNasTransport(
             UplinkNasTransport {
@@ -330,95 +308,79 @@ mod tests {
             }
         )).await;
 
-        // MME should respond with SecurityModeCommand
-        assert_eq!(responses.len(), 1, "MME should send SecurityModeCommand after successful auth");
-        assert!(mme.world.is_authenticated(entity_id),
-            "Subscriber should be authenticated after valid RES");
+        assert_eq!(responses.len(), 1, "MME should send SecurityModeCommand");
+        assert!(mme.world.is_authenticated(entity_id), "Subscriber should be authenticated");
 
         let sec_cmd_pdu = match &responses[0] {
             S1apMessage::DownlinkNasTransport(d) => d.nas_pdu.clone(),
             _ => panic!("Expected SecurityModeCommand"),
         };
-
-        // Verify it decoded as SecurityModeCommand
         match midn_proto::nas::codec::decode_nas(&sec_cmd_pdu) {
             Ok(midn_proto::nas::codec::NasPdu::SecurityModeCommand(_)) => {}
             other => panic!("Expected SecurityModeCommand, got {other:?}"),
         }
 
-        // ── Step 4: UE → MME : SecurityModeComplete ───────────────────────────
-        let sec_complete_pdu = encode_sec_mode_complete();
+        // Step 4: UE → MME : SecurityModeComplete
         let responses = mme.process_s1ap(S1apMessage::UplinkNasTransport(
             UplinkNasTransport {
                 mme_ue_s1ap_id,
                 enb_ue_s1ap_id: 1,
-                nas_pdu:        sec_complete_pdu,
+                nas_pdu:        encode_sec_mode_complete(),
                 tai:            [0; 5],
                 eutran_cgi:     [0; 7],
             }
         )).await;
 
-        // MME should respond with AttachAccept
         assert_eq!(responses.len(), 1, "MME should send AttachAccept");
         let attach_accept_pdu = match &responses[0] {
             S1apMessage::DownlinkNasTransport(d) => d.nas_pdu.clone(),
             _ => panic!("Expected AttachAccept"),
         };
-
-        // Decode and verify IP was assigned
         match midn_proto::nas::codec::decode_nas(&attach_accept_pdu) {
             Ok(midn_proto::nas::codec::NasPdu::AttachAccept(aa)) => {
-                assert!(aa.ip_address.is_some(), "AttachAccept should contain IP address");
-                let ip = aa.ip_address.unwrap();
-                assert_eq!(&ip[0..1], &[10], "IP should be in 10.x.x.x range");
-                assert!(mme.world.session.contains_key(&entity_id),
-                    "Session should exist after attach accept");
+                assert!(aa.ip_address.is_some(), "AttachAccept must contain IP address");
+                assert_eq!(aa.ip_address.unwrap()[0], 10, "IP should be in 10.x.x.x range");
             }
             other => panic!("Expected AttachAccept, got {other:?}"),
         }
+        assert!(mme.world.session.contains_key(&entity_id), "Session must exist");
 
-        // ── Step 5: UE → MME : AttachComplete ────────────────────────────────
-        let attach_complete_pdu = encode_attach_complete();
+        // Step 5: UE → MME : AttachComplete
         let responses = mme.process_s1ap(S1apMessage::UplinkNasTransport(
             UplinkNasTransport {
                 mme_ue_s1ap_id,
                 enb_ue_s1ap_id: 1,
-                nas_pdu:        attach_complete_pdu,
+                nas_pdu:        encode_attach_complete(),
                 tai:            [0; 5],
                 eutran_cgi:     [0; 7],
             }
         )).await;
 
-        // No response needed for AttachComplete
-        assert_eq!(responses.len(), 0);
+        assert_eq!(responses.len(), 0, "No response needed for AttachComplete");
 
-        // ── Final state assertions ────────────────────────────────────────────
-        assert_eq!(mme.subscriber_count(),    1, "One subscriber should be registered");
-        assert_eq!(mme.authenticated_count(), 1, "Subscriber should be authenticated");
+        // Final state assertions
+        assert_eq!(mme.subscriber_count(),    1);
+        assert_eq!(mme.authenticated_count(), 1);
         assert!(mme.world.is_authenticated(entity_id));
-        assert!(mme.world.session.contains_key(&entity_id), "Session exists");
-        assert!(mme.world.tunnel.contains_key(&entity_id),  "Tunnel entry exists");
-
-        tracing::info!("Phase 2 gate test: PASSED — full LTE attach procedure complete");
+        assert!(mme.world.session.contains_key(&entity_id));
+        assert!(mme.world.tunnel.contains_key(&entity_id));
     }
 
     #[tokio::test]
     async fn test_attach_fails_for_unknown_imsi() {
         let mut mme = Mme::new();
-        // No subscribers provisioned
 
-        let attach_req_pdu = encode_attach_request(999_99_9999999999_u64, 1, 7);
         let responses = mme.process_s1ap(S1apMessage::InitialUeMessage(
             InitialUeMessage {
                 enb_ue_s1ap_id: 1,
-                nas_pdu:        attach_req_pdu,
+                nas_pdu:        encode_attach_request(999_99_9999999999_u64, 1, 7),
                 tai:            [0; 5],
                 eutran_cgi:     [0; 7],
                 rrc_cause:      0,
             }
         )).await;
 
-        assert_eq!(responses.len(), 0, "Unknown IMSI should produce no response (silently dropped)");
+        assert_eq!(responses.len(), 0, "Unknown IMSI should produce no response");
         assert_eq!(mme.subscriber_count(), 0);
     }
 
@@ -432,10 +394,14 @@ mod tests {
             "cd63cb71954a9f4e48a5994e37a02baf",
         ).unwrap();
 
-        // Attach request
-        let attach_req = encode_attach_request(imsi, 1, 7);
         let responses = mme.process_s1ap(S1apMessage::InitialUeMessage(
-            InitialUeMessage { enb_ue_s1ap_id: 2, nas_pdu: attach_req, tai: [0;5], eutran_cgi: [0;7], rrc_cause: 0 }
+            InitialUeMessage {
+                enb_ue_s1ap_id: 2,
+                nas_pdu:        encode_attach_request(imsi, 1, 7),
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+                rrc_cause:      0,
+            }
         )).await;
         assert_eq!(responses.len(), 1);
 
@@ -444,15 +410,18 @@ mod tests {
             _ => panic!(),
         };
 
-        // Send wrong RES (all zeros)
-        let wrong_res = [0u8; 8];
-        let auth_resp = encode_auth_response(&wrong_res);
+        // Send wrong RES
         let responses = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport { mme_ue_s1ap_id: mme_ue_id, enb_ue_s1ap_id: 2,
-                nas_pdu: auth_resp, tai: [0;5], eutran_cgi: [0;7] }
+            UplinkNasTransport {
+                mme_ue_s1ap_id: mme_ue_id,
+                enb_ue_s1ap_id: 2,
+                nas_pdu:        encode_auth_response(&[0u8; 8]),
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+            }
         )).await;
 
-        assert_eq!(responses.len(), 0, "Wrong RES should produce no response");
+        assert_eq!(responses.len(), 0, "Wrong RES must produce no response");
 
         let entity_id = mme.registry.lookup(imsi).expect("entity should still exist");
         assert!(
@@ -460,4 +429,4 @@ mod tests {
             "Subscriber must NOT be authenticated after wrong RES"
         );
     }
-}
+        }
