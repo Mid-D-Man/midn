@@ -10,12 +10,17 @@ name = "midn_core"
 midn-auth  = { path = "../midn-auth" }
 midn-proto = { path = "../midn-proto" }
 zeroize    = { version = "1.8", features = ["derive"] }
-bytes      = "1.5"       # ← was missing; used in attach.rs and state_machine.rs
-hex        = "0.4"       # ← was missing; used in hss.rs for provision_hex
+bytes      = "1.5"
+hex        = "0.4"
 tokio      = { version = "1", features = ["full"] }
 thiserror  = "1.0"
 tracing    = "0.1"
 # mid-math = { workspace = true }
 
 [dev-dependencies]
+criterion  = { version = "0.5", features = ["html_reports"] }
 tokio-test = "0.4"
+
+[[bench]]
+name    = "core_bench"
+harness = false
