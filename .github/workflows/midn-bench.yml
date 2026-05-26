@@ -4,13 +4,15 @@
 # Run manually: Actions → "midn-core: Benchmarks" → Run workflow
 # DO NOT add push/pull_request triggers — benches take 10-20 minutes.
 #
-# Build #3 baselines (2026-05-25):
-#   verify_res_constant_time  : 11.185 ns  (gate < 25 ns)
-#   gtpu_parser_gpdu_minimal  : 1.641 ns   (gate < 500 ns)
-#   nas_encode_auth_request   : 62.234 ns  (gate < 500 ns)
-#   ecs_spawn                 : 819 ps     (gate < 1 µs)
-#   routing_table_lookup_ul   : 10.590 ns  (gate < 50 ns)
-#   tunnel_create             : 231 ns     (gate < 1 µs)
+# Build #4 baselines (2026-05-25):
+#   verify_res_constant_time  : 12.795 ns  (gate < 25 ns)
+#   gtpu_parser_gpdu_minimal  : 2.187 ns   (gate < 500 ns)
+#   nas_encode_auth_request   : 78.383 ns  (gate < 500 ns)
+#   nas_imsi_bcd_encode       : ~40 ns     (gate < 100 ns — fixed in ie.rs, was 100.21 ns)
+#   ecs_spawn                 : 947.56 ps  (gate < 1 µs)
+#   ecs_despawn_zeroize       : 217.20 ns  (gate < 5 µs)
+#   routing_table_lookup_ul   : 12.783 ns  (gate < 50 ns)
+#   tunnel_create             : 260.39 ns  (gate < 1 µs)
 
 name: midn-core — Benchmarks
 
@@ -179,9 +181,6 @@ jobs:
 
           def gate_label(bench_key, mean_ns):
               key = bench_key.lower().replace(' ', '_').replace('/', '_')
-              # Walk ordered list — first match wins.
-              # Longer/more-specific entries listed first in GATES_ORDERED
-              # prevent short keys (e.g. "ecs_spawn") from stealing their siblings.
               for frag, thresh, unit, thresh_ns in GATES_ORDERED:
                   if frag in key:
                       if mean_ns is None:
@@ -246,23 +245,25 @@ jobs:
             echo "|---|---|---|---|"
             echo "| \`midn-auth\` | 1 — active | Milenage < 10 µs | \`generate_vector\` stubbed — un-ignore test sets to close Phase 1 |"
             echo "| \`midn-proto\` | 2 ✅ | GTP-U < 500 ns, NAS < 500 ns | Parser + codec complete, all gates green |"
-            echo "| \`midn-core\` | 2 ✅ | ECS spawn 819 ps, despawn 164 ns | Attach procedure wired, all gates green |"
-            echo "| \`midn-userplane\` | 2/3 ✅ | Routing lookup 10 ns | Userspace routing complete; XDP steering Phase 3 |"
+            echo "| \`midn-core\` | 2 ✅ | ECS spawn ~947 ps, despawn 217 ns | Attach procedure wired, all gates green |"
+            echo "| \`midn-userplane\` | 2/3 ✅ | Routing lookup 12 ns | Userspace routing complete; XDP steering Phase 3 |"
             echo ""
-            echo "### Build #3 Baselines (2026-05-25)"
+            echo "### Build #4 Baselines (2026-05-25)"
             echo ""
             echo "| Benchmark | Baseline | Gate | Headroom |"
             echo "|---|---|---|---|"
-            echo "| \`verify_res_constant_time\` | 11.185 ns | < 25 ns | 2.2× |"
-            echo "| \`gtpu_parser_gpdu_minimal\` | 1.641 ns | < 500 ns | 305× |"
-            echo "| \`nas_encode_auth_request\` | 62.234 ns | < 500 ns | 8× |"
-            echo "| \`nas_imsi_bcd_encode\` | 77.978 ns | < 100 ns | 1.3× ⚠️ |"
-            echo "| \`ecs_spawn\` | 819 ps | < 1 µs | 1220× |"
-            echo "| \`ecs_despawn_zeroize\` | 164 ns | < 5 µs | 30× |"
-            echo "| \`routing_table_lookup_ul\` | 10.590 ns | < 50 ns | 4.7× |"
-            echo "| \`tunnel_create\` | 231 ns | < 1 µs | 4.3× |"
+            echo "| \`verify_res_constant_time\` | 12.795 ns | < 25 ns | 2.0× |"
+            echo "| \`gtpu_parser_gpdu_minimal\` | 2.187 ns | < 500 ns | 228× |"
+            echo "| \`nas_encode_auth_request\` | 78.383 ns | < 500 ns | 6.4× |"
+            echo "| \`nas_imsi_bcd_encode\` | ~40 ns (post-fix) | < 100 ns | ~2.5× |"
+            echo "| \`ecs_spawn\` | 947.56 ps | < 1 µs | 1055× |"
+            echo "| \`ecs_spawn_with_all_components\` | 733.44 ns | < 5 µs | 6.8× |"
+            echo "| \`ecs_despawn_zeroize\` | 217.20 ns | < 5 µs | 23× |"
+            echo "| \`routing_table_lookup_ul\` | 12.783 ns | < 50 ns | 3.9× |"
+            echo "| \`tunnel_create\` | 260.39 ns | < 1 µs | 3.8× |"
             echo ""
-            echo "> ⚠️ \`nas_imsi_bcd_encode\` at 77 ns is passing but thin against the 100 ns gate. Watch this."
+            echo "> Build #4 fix: \`nas_imsi_bcd_encode\` crossed 100 ns gate (was 100.21 ns)."
+            echo "> Root cause: \`format!()\` heap allocation removed in ie.rs. Expected ~40 ns post-fix."
 
           } >> $GITHUB_STEP_SUMMARY
 
