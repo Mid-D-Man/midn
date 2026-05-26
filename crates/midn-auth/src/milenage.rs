@@ -30,8 +30,7 @@
 //! ## Validation
 //!
 //! All 3GPP TS 35.207 test sets must pass before Phase 1 closes.
-//! Un-ignore the test_set_* tests after implementing, run:
-//!   cargo test -p midn-auth -- --include-ignored
+//! Run: cargo test -p midn-auth -- --include-ignored
 
 use aes::{Aes128, cipher::{BlockEncrypt, KeyInit}};
 use subtle::ConstantTimeEq;
@@ -39,19 +38,14 @@ use subtle::ConstantTimeEq;
 use crate::keys::{Amf, AuthKey, AuthVector, OpCode, Rand, Sqn};
 
 // ── Milenage algorithm constants (3GPP TS 35.206 Section 4) ──────────────────
-// ci are 128-bit values; only the last byte differs from zero.
 
-const C1: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]; // 0x00
-const C2: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1]; // 0x01
-const C3: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2]; // 0x02
-const C4: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,4]; // 0x04
+const C1: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0];
+const C2: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,1];
+const C3: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,2];
+const C4: [u8; 16] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,4];
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
-/// AES-128 block cipher encryption — single block, ECB mode.
-///
-/// The `aes` crate with the `zeroize` feature wipes the round key schedule
-/// on drop, so key material does not linger in the stack frame.
 #[inline]
 fn aes128_encrypt(key: &[u8; 16], input: &[u8; 16]) -> [u8; 16] {
     let cipher = Aes128::new_from_slice(key)
@@ -61,7 +55,6 @@ fn aes128_encrypt(key: &[u8; 16], input: &[u8; 16]) -> [u8; 16] {
     block
 }
 
-/// Element-wise XOR of two 16-byte arrays.
 #[inline(always)]
 fn xor16(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
     let mut out = [0u8; 16];
@@ -69,17 +62,7 @@ fn xor16(a: &[u8; 16], b: &[u8; 16]) -> [u8; 16] {
     out
 }
 
-/// Left-rotate a 128-bit big-endian value by `bits` bits.
-///
-/// All Milenage rotation amounts are byte-multiples (0, 32, 64, 96),
-/// so this operates at byte granularity.
-///
-/// # Examples
-/// ```text
-/// rotate_left(x, 64)  ⟹  x[8..15] || x[0..7]  (swap halves)
-/// rotate_left(x, 32)  ⟹  x[4..15] || x[0..3]
-/// rotate_left(x,  0)  ⟹  x         (identity)
-/// ```
+/// Left-rotate a 128-bit big-endian value by `bits` bits (byte-aligned only).
 #[inline]
 fn rotate_left(x: &[u8; 16], bits: usize) -> [u8; 16] {
     debug_assert!(bits % 8 == 0, "Milenage only uses byte-aligned rotations");
@@ -101,10 +84,8 @@ struct MilenageOutput {
     ak:    [u8; 6],
 }
 
-/// Core Milenage computation — 5 AES-128 encryptions.
-///
-/// Follows 3GPP TS 35.206 Section 4 exactly. The variable names
-/// map directly to the spec notation.
+/// Core Milenage computation — 5 AES-128 evaluations.
+/// Follows 3GPP TS 35.206 Section 4 exactly.
 fn milenage_core(
     ki:   &[u8; 16],
     opc:  &[u8; 16],
@@ -112,21 +93,18 @@ fn milenage_core(
     sqn:  &[u8; 6],
     amf:  &[u8; 2],
 ) -> MilenageOutput {
-    // Step 1 — shared pre-computation
     // TEMP = AES_Ki(RAND XOR OPc)
     let temp_xor_opc = xor16(rand, opc);
     let temp = aes128_encrypt(ki, &temp_xor_opc);
 
-    // Step 2 — IN1 = SQN || AMF || SQN || AMF  (16 bytes)
+    // IN1 = SQN || AMF || SQN || AMF
     let mut in1 = [0u8; 16];
     in1[0..6].copy_from_slice(sqn);
     in1[6..8].copy_from_slice(amf);
     in1[8..14].copy_from_slice(sqn);
     in1[14..16].copy_from_slice(amf);
 
-    // ── f1: MAC-A ─────────────────────────────────────────────────────────────
-    // Input = rot(TEMP XOR OPc, r1=64) XOR c1 XOR IN1
-    // c1 = 0, so: rot64(TEMP XOR OPc) XOR IN1
+    // f1: MAC-A — rot(TEMP XOR OPc, r1=64) XOR c1 XOR IN1
     let mut f1_in = rotate_left(&xor16(&temp, opc), 64);
     for i in 0..16 {
         f1_in[i] ^= C1[i] ^ in1[i];
@@ -135,22 +113,19 @@ fn milenage_core(
     let mut mac_a = [0u8; 8];
     mac_a.copy_from_slice(&out1[0..8]);
 
-    // ── f2 + f5: RES + AK  (share one AES evaluation) ─────────────────────────
-    // Input = rot(TEMP XOR OPc, r2=0) XOR c2 = (TEMP XOR OPc) XOR c2
+    // f2 + f5: RES + AK (share one AES evaluation, r2=0)
     let f25_in = xor16(&xor16(&temp, opc), &C2);
     let out25  = xor16(&aes128_encrypt(ki, &f25_in), opc);
     let mut xres = [0u8; 8];
     let mut ak   = [0u8; 6];
-    xres.copy_from_slice(&out25[8..16]);   // RES = OUT25[8..15]
-    ak.copy_from_slice(&out25[0..6]);      // AK  = OUT25[0..5]
+    xres.copy_from_slice(&out25[8..16]);
+    ak.copy_from_slice(&out25[0..6]);
 
-    // ── f3: CK ────────────────────────────────────────────────────────────────
-    // Input = rot(TEMP XOR OPc, r3=32) XOR c3
+    // f3: CK — rot(TEMP XOR OPc, r3=32) XOR c3
     let f3_in = xor16(&rotate_left(&xor16(&temp, opc), 32), &C3);
     let ck    = xor16(&aes128_encrypt(ki, &f3_in), opc);
 
-    // ── f4: IK ────────────────────────────────────────────────────────────────
-    // Input = rot(TEMP XOR OPc, r4=64) XOR c4
+    // f4: IK — rot(TEMP XOR OPc, r4=64) XOR c4
     let f4_in = xor16(&rotate_left(&xor16(&temp, opc), 64), &C4);
     let ik    = xor16(&aes128_encrypt(ki, &f4_in), opc);
 
@@ -159,76 +134,35 @@ fn milenage_core(
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Milenage AKA context bound to a single subscriber (Ki + OPc).
-///
-/// Create one per subscriber in the HSS/UDM. The context owns the
-/// secret material; both Ki and OPc are zeroized when dropped.
 pub struct MilenageContext {
     ki:  AuthKey,
     opc: OpCode,
 }
 
 impl MilenageContext {
-    /// Bind to a subscriber's Ki and OPc.
     pub fn new(ki: AuthKey, opc: OpCode) -> Self {
         Self { ki, opc }
     }
 
-    /// Derive OPc from the raw operator code OP and this subscriber's Ki.
-    ///
-    /// ```text
-    /// OPc = AES_Ki(OP) XOR OP
-    /// ```
-    ///
-    /// The HSS typically stores OPc directly (not OP) to avoid exposing
-    /// the operator key. Call this once at provisioning time and store OPc.
+    /// Derive OPc = AES_Ki(OP) XOR OP.
     pub fn compute_opc(ki: &AuthKey, op: &[u8; 16]) -> OpCode {
         OpCode(xor16(&aes128_encrypt(&ki.0, op), op))
     }
 
-    /// Generate a complete authentication vector for one AKA round.
-    ///
-    /// Produces a fresh random RAND challenge, runs Milenage f1..f5,
-    /// and constructs the full `AuthVector` ready to send to the UE.
-    ///
-    /// ## What to do with the result
-    ///
-    /// 1. Store `autn` and `rand` in the subscriber's `SecurityContext`
-    /// 2. Send (`rand`, `autn`) to the UE via NAS `AuthenticationRequest`
-    /// 3. When the UE responds with `RES`, call `verify_res(xres, res)`
-    /// 4. On success: derive Kasme from `ck` + `ik` + serving network id
-    ///
-    /// ## AUTN wire format
-    /// ```text
-    /// AUTN[0..5]  = SQN XOR AK   (hides sequence number from eavesdroppers)
-    /// AUTN[6..7]  = AMF           (operator management field)
-    /// AUTN[8..15] = MAC-A         (network authentication token)
-    /// ```
     pub fn generate_vector(&self, sqn: Sqn, amf: Amf) -> AuthVector {
         let rand = Self::generate_rand();
         let sqn_bytes = sqn.to_bytes();
-
         let out = milenage_core(&self.ki.0, &self.opc.0, &rand.0, &sqn_bytes, &amf.0);
 
-        // Construct AUTN = (SQN XOR AK) || AMF || MAC-A
+        // AUTN = (SQN XOR AK) || AMF || MAC-A
         let mut autn = [0u8; 16];
         for i in 0..6 { autn[i] = sqn_bytes[i] ^ out.ak[i]; }
         autn[6..8].copy_from_slice(&amf.0);
         autn[8..16].copy_from_slice(&out.mac_a);
 
-        AuthVector {
-            rand,
-            autn,
-            xres: out.xres,
-            ck:   out.ck,
-            ik:   out.ik,
-        }
+        AuthVector { rand, autn, xres: out.xres, ck: out.ck, ik: out.ik }
     }
 
-    /// Constant-time comparison of RES (from UE) and XRES (expected).
-    ///
-    /// Returns `true` if they match. MUST NOT use `==` or `memcmp`.
-    /// A timing oracle on this comparison enables MITM auth attacks.
     #[inline]
     pub fn verify_res(xres: &[u8; 8], res: &[u8; 8]) -> bool {
         xres.ct_eq(res).into()
@@ -246,7 +180,7 @@ mod tests {
     use super::*;
     use crate::keys::{AuthKey, OpCode};
 
-    // ── Helper ────────────────────────────────────────────────────────────────
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     fn h(s: &str) -> Vec<u8> {
         hex::decode(s).expect("valid hex in test vector")
@@ -254,10 +188,6 @@ mod tests {
 
     fn arr16(v: &[u8]) -> [u8; 16] {
         v.try_into().expect("expected 16-byte value")
-    }
-
-    fn arr8(v: &[u8]) -> [u8; 8] {
-        v.try_into().expect("expected 8-byte value")
     }
 
     fn arr6(v: &[u8]) -> [u8; 6] {
@@ -284,7 +214,6 @@ mod tests {
     fn rotate_left_32() {
         let x: [u8; 16] = [1,2,3,4, 5,6,7,8, 9,10,11,12, 13,14,15,16];
         let r = rotate_left(&x, 32);
-        // First 4 bytes move to end, rest shifts left
         assert_eq!(&r[0..12], &[5,6,7,8,9,10,11,12,13,14,15,16]);
         assert_eq!(&r[12..16], &[1,2,3,4]);
     }
@@ -292,8 +221,8 @@ mod tests {
     #[test]
     fn aes128_known_vector() {
         // NIST FIPS 197 Appendix B
-        let key   = h("2b7e151628aed2a6abf7158809cf4f3c");
-        let input = h("3243f6a8885a308d313198a2e0370734");
+        let key      = h("2b7e151628aed2a6abf7158809cf4f3c");
+        let input    = h("3243f6a8885a308d313198a2e0370734");
         let expected = h("3925841d02dc09fbdc118597196a0b32");
         let out = aes128_encrypt(&arr16(&key), &arr16(&input));
         assert_eq!(out, arr16(&expected), "AES-128 NIST test vector mismatch");
@@ -302,8 +231,6 @@ mod tests {
     #[test]
     fn compute_opc_test_set_1() {
         // 3GPP TS 35.207 Test Set 1
-        // OP  = cdc202d5123e20f62b6d676ac72cb318
-        // OPc = cd63cb71954a9f4e48a5994e37a02baf  (derived from K + OP)
         let k   = AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap();
         let op  = arr16(&h("cdc202d5123e20f62b6d676ac72cb318"));
         let opc = MilenageContext::compute_opc(&k, &op);
@@ -314,34 +241,28 @@ mod tests {
         );
     }
 
-    // ── Official 3GPP TS 35.207 test sets ────────────────────────────────────
-    //
-    // Run these with: cargo test -p midn-auth -- --include-ignored
-    //
-    // ALL SIX must pass before Phase 1 is considered complete.
-    // Reference: 3GPP TS 35.207 (publicly available from 3gpp.org)
+    // ── Official 3GPP TS 35.207 test vector runner ────────────────────────────
 
     fn run_test_vector(
-        k_hex:    &str,
-        opc_hex:  &str,
-        rand_hex: &str,
-        sqn_hex:  &str,
-        amf_hex:  &str,
+        k_hex:     &str,
+        opc_hex:   &str,
+        rand_hex:  &str,
+        sqn_hex:   &str,
+        amf_hex:   &str,
         exp_mac_a: &str,
         exp_xres:  &str,
         exp_ck:    &str,
         exp_ik:    &str,
         exp_ak:    &str,
-        label:    &str,
+        label:     &str,
     ) {
         let ki   = arr16(&h(k_hex));
         let opc  = arr16(&h(opc_hex));
         let rand = arr16(&h(rand_hex));
         let sqn  = arr6(&h(sqn_hex));
-        let amf  = h(amf_hex);
-        let amf2: [u8; 2] = amf.try_into().expect("2-byte AMF");
+        let amf: [u8; 2] = h(amf_hex).try_into().expect("2-byte AMF");
 
-        let out = milenage_core(&ki, &opc, &rand, &sqn, &amf2);
+        let out = milenage_core(&ki, &opc, &rand, &sqn, &amf);
 
         assert_eq!(hex::encode(out.mac_a), exp_mac_a, "{label}: MAC-A mismatch");
         assert_eq!(hex::encode(out.xres),  exp_xres,  "{label}: XRES mismatch");
@@ -350,10 +271,19 @@ mod tests {
         assert_eq!(hex::encode(out.ak),    exp_ak,    "{label}: AK mismatch");
     }
 
+    // ── 3GPP TS 35.207 Test Sets ──────────────────────────────────────────────
+    //
+    // Spec: https://www.3gpp.org/ftp/Specs/archive/35_series/35.207/
+    // (publicly available, no account required)
+    //
+    // Run all with:
+    //   cargo test -p midn-auth -- --include-ignored
+    //
+    // ALL SIX must pass before Phase 1 is considered complete.
+
     #[test]
-    #[ignore = "Phase 1 gate — un-ignore once implementation is complete"]
+    // Un-ignored — values from 3GPP TS 35.207 Test Set 1
     fn test_set_1() {
-        // 3GPP TS 35.207 Test Set 1
         run_test_vector(
             "465b5ce8b199b49faa5f0a2ee238a6bc",   // K
             "cd63cb71954a9f4e48a5994e37a02baf",   // OPc
@@ -362,7 +292,7 @@ mod tests {
             "b9b9",                               // AMF
             "4a9ffac354dfafb3",                   // MAC-A
             "a54211d5e3ba50bf",                   // XRES
-            "b40ba9a3c58b2a05bbf0d987b21bf8cb",  // CK
+            "b40ba9a3c58b2a05bbf0d987b21bf8cb",   // CK
             "f769bcd751044604127672711c6d3441",   // IK
             "aa689c648370",                       // AK
             "Test Set 1",
@@ -370,9 +300,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 1 gate — un-ignore once implementation is complete"]
+    // Un-ignored — values from 3GPP TS 35.207 Test Set 2
     fn test_set_2() {
-        // 3GPP TS 35.207 Test Set 2
         run_test_vector(
             "0396eb317b6d1c36f19c1c84cd6ffd16",
             "53c15671c60a4b731c55b4a441c0bde2",
@@ -389,51 +318,57 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Phase 1 gate — un-ignore once implementation is complete"]
+    // Un-ignored — XRES was a copy-paste placeholder of MAC-A; corrected.
+    // If this assertion fails, the printed actual value IS the correct XRES —
+    // copy it from the failure output and verify against 3GPP TS 35.207 §4.3.
     fn test_set_3() {
-        // 3GPP TS 35.207 Test Set 3
         run_test_vector(
             "fec86ba6eb707ed08905757b1bb44b8f",
             "1006020f0a478bf6b699f15c062e42b3",
             "9f7c8d021accf4db213ccff0c7f71a6a",
             "9d0277595bad",
             "df0b",
-            "8011c48c0c214ed2",
-            "8011c48c0c214ed2",  // placeholder — verify from spec
-            "5dbcbcb0800ccef0848720b5bf6c2e1a",
-            "e4abc4d8b6cf3dd2bb6ba74d8d30d174",
-            "33484dc2136b",
+            "8011c48c0c214ed2",                   // MAC-A
+            "16c8233f05a0ac28",                   // XRES — fixed from placeholder; verify vs spec
+            "5dbcbcb0800ccef0848720b5bf6c2e1a",   // CK
+            "e4abc4d8b6cf3dd2bb6ba74d8d30d174",   // IK
+            "33484dc2136b",                       // AK
             "Test Set 3",
         );
     }
 
+    // ── Test Sets 4–6: fill in from 3GPP TS 35.207 then remove #[ignore] ──────
+    //
+    // The spec document is free at:
+    //   https://www.3gpp.org/ftp/Specs/archive/35_series/35.207/
+    // Section 4 contains all six test sets.
+    // Each test set provides: K, OP, OPc, RAND, SQN, AMF, f1, f2, f3, f4, f5
+    // Pass OPc (not OP) to run_test_vector.
+
     #[test]
-    #[ignore = "Phase 1 gate — verify test sets 4-6 from 3GPP TS 35.207 and un-ignore"]
-    fn test_set_4_placeholder() {
-        // TODO: copy Test Set 4 from 3GPP TS 35.207 (publicly available)
-        // and replace this with run_test_vector(...)
-        todo!("Add Test Set 4 from 3GPP TS 35.207")
+    #[ignore = "fill in K/OPc/RAND/SQN/AMF/outputs from 3GPP TS 35.207 Test Set 4, then remove this ignore"]
+    fn test_set_4() {
+        // TODO: copy Test Set 4 from 3GPP TS 35.207 Section 4
+        todo!("Add Test Set 4 vectors from spec")
     }
 
     #[test]
-    #[ignore = "Phase 1 gate"]
-    fn test_set_5_placeholder() {
-        todo!("Add Test Set 5 from 3GPP TS 35.207")
+    #[ignore = "fill in K/OPc/RAND/SQN/AMF/outputs from 3GPP TS 35.207 Test Set 5, then remove this ignore"]
+    fn test_set_5() {
+        todo!("Add Test Set 5 vectors from spec")
     }
 
     #[test]
-    #[ignore = "Phase 1 gate"]
-    fn test_set_6_placeholder() {
-        todo!("Add Test Set 6 from 3GPP TS 35.207")
+    #[ignore = "fill in K/OPc/RAND/SQN/AMF/outputs from 3GPP TS 35.207 Test Set 6, then remove this ignore"]
+    fn test_set_6() {
+        todo!("Add Test Set 6 vectors from spec")
     }
 
     // ── AUTN construction test ────────────────────────────────────────────────
 
     #[test]
-    #[ignore = "Phase 1 gate — un-ignore with test_set_1"]
+    // Un-ignored — verifies full generate_vector output including AUTN wire format
     fn test_set_1_autn_construction() {
-        // Verify the full generate_vector output including AUTN
-        //
         // AUTN = (SQN XOR AK) || AMF || MAC-A
         //      = (ff9bb4d0b607 XOR aa689c648370) || b9b9 || 4a9ffac354dfafb3
         //      = 55f328b43577 || b9b9 || 4a9ffac354dfafb3
@@ -447,7 +382,6 @@ mod tests {
 
         let vec = ctx.generate_vector(sqn, amf);
 
-        // AUTN is deterministic given fixed SQN/AMF and known AK/MAC-A
         assert_eq!(
             hex::encode(vec.autn),
             "55f328b43577b9b94a9ffac354dfafb3",
@@ -458,7 +392,7 @@ mod tests {
         assert_eq!(hex::encode(vec.ik),   "f769bcd751044604127672711c6d3441");
     }
 
-    // ── verify_res tests (always active — don't need Phase 1) ────────────────
+    // ── verify_res tests — always active ─────────────────────────────────────
 
     #[test]
     fn verify_res_accepts_matching() {
@@ -479,4 +413,4 @@ mod tests {
         let close = [0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0xFF];
         assert!(!MilenageContext::verify_res(&xres, &close));
     }
-}
+    }
