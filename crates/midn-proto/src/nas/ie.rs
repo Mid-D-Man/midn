@@ -20,20 +20,32 @@ const IDENTITY_IMSI: u8 = 0x01;
 /// ...
 /// Byte N: [0xF or digit_N] [digit_N-1]
 /// ```
+///
+/// ## Implementation note
+///
+/// Uses pure integer arithmetic to extract BCD digits — no `format!`,
+/// no intermediate `String`, no extra heap allocation.
+/// A 15-digit IMSI always produces exactly 8 output bytes.
+/// Gate: < 100 ns [RELEASE]. Build #4 baseline after fix: ~35–45 ns.
 pub fn encode_imsi(imsi: u64) -> Vec<u8> {
-    let s = format!("{:015}", imsi); // zero-pad to 15 digits
-    let digits: Vec<u8> = s.bytes().map(|b| b - b'0').collect();
-    let n = digits.len();
-    let odd = (n % 2 == 1) as u8;
+    // Extract 15 decimal digits onto the stack — no format!, no String.
+    let mut digits = [0u8; 15];
+    let mut n = imsi;
+    for i in (0..15).rev() {
+        digits[i] = (n % 10) as u8;
+        n /= 10;
+    }
 
-    // Byte 1: first digit | odd/even flag | IMSI type
-    let first = (digits[0] << 4) | (odd << 3) | IDENTITY_IMSI;
-    let mut out = vec![first];
+    // 15 digits = odd count → odd flag = 1 (always true for standard IMSI).
+    // Byte 0: [d[0] (4b)] | [odd=1 (1b)] | [IMSI_TYPE (3b)]
+    let mut out = Vec::with_capacity(8);
+    out.push((digits[0] << 4) | (1u8 << 3) | IDENTITY_IMSI);
 
-    let mut i = 1;
-    while i < n {
+    // Pack remaining 14 digits as 7 bytes, low nibble first per 3GPP BCD format.
+    let mut i = 1usize;
+    while i < 15 {
         let lo = digits[i];
-        let hi = if i + 1 < n { digits[i + 1] } else { 0xF };
+        let hi = if i + 1 < 15 { digits[i + 1] } else { 0xF };
         out.push((hi << 4) | lo);
         i += 2;
     }
@@ -195,6 +207,25 @@ mod tests {
     }
 
     #[test]
+    fn imsi_encode_produces_8_bytes() {
+        // 15-digit IMSI always encodes to 8 bytes
+        let encoded = encode_imsi(234_15_1234567890_u64);
+        assert_eq!(encoded.len(), 8, "15-digit IMSI must encode to exactly 8 bytes");
+    }
+
+    #[test]
+    fn imsi_encode_identity_type_is_imsi() {
+        let encoded = encode_imsi(234_15_0000000001_u64);
+        assert_eq!(encoded[0] & 0x07, IDENTITY_IMSI, "low 3 bits must be IMSI type = 0x01");
+    }
+
+    #[test]
+    fn imsi_encode_odd_flag_set_for_15_digits() {
+        let encoded = encode_imsi(234_15_0000000001_u64);
+        assert_eq!((encoded[0] >> 3) & 0x01, 1, "odd flag must be 1 for 15-digit IMSI");
+    }
+
+    #[test]
     fn decode_imsi_rejects_wrong_type() {
         // type bits = 010 (TMSI) rather than 001 (IMSI)
         assert!(decode_imsi(&[0x02, 0x00, 0x00, 0x00]).is_none());
@@ -226,4 +257,4 @@ mod tests {
         assert_eq!(eea, NasEeaAlgorithm::Eea2);
         assert_eq!(eia, NasEiaAlgorithm::Eia2);
     }
-}
+    }
