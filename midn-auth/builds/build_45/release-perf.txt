@@ -1,0 +1,174 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling zerocopy v0.8.50
+   Compiling cfg-if v1.0.4
+   Compiling libc v0.2.186
+   Compiling syn v2.0.117
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling crossbeam-utils v0.8.21
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling zerocopy-derive v0.8.50
+   Compiling serde v1.0.228
+   Compiling autocfg v1.5.1
+   Compiling zmij v1.0.21
+   Compiling num-traits v0.2.19
+   Compiling serde_derive v1.0.228
+   Compiling crossbeam-epoch v0.9.18
+   Compiling getrandom v0.2.17
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling serde_json v1.0.150
+   Compiling ppv-lite86 v0.2.21
+   Compiling half v2.7.1
+   Compiling rand_core v0.6.4
+   Compiling crossbeam-deque v0.8.6
+   Compiling zeroize_derive v1.4.3
+   Compiling crypto-common v0.1.7
+   Compiling inout v0.1.4
+   Compiling plotters-backend v0.3.7
+   Compiling memchr v2.8.1
+   Compiling anstyle v1.0.14
+   Compiling clap_lex v1.1.0
+   Compiling itoa v1.0.18
+   Compiling ciborium-io v0.2.2
+   Compiling regex-syntax v0.8.10
+   Compiling ciborium-ll v0.2.2
+   Compiling regex-automata v0.4.14
+   Compiling clap_builder v4.6.0
+   Compiling plotters-svg v0.3.7
+   Compiling zeroize v1.8.2
+   Compiling cipher v0.4.4
+   Compiling rand_chacha v0.3.1
+   Compiling itertools v0.10.5
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling cpufeatures v0.2.17
+   Compiling aes v0.8.4
+   Compiling walkdir v2.5.0
+   Compiling criterion-plot v0.5.0
+   Compiling rand v0.8.6
+   Compiling rayon v1.12.0
+   Compiling plotters v0.3.7
+   Compiling clap v4.6.1
+   Compiling regex v1.12.3
+   Compiling tinytemplate v1.2.1
+   Compiling ciborium v0.2.2
+   Compiling is-terminal v0.4.17
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling hex v0.4.3
+   Compiling once_cell v1.21.4
+   Compiling subtle v2.6.1
+   Compiling criterion v0.5.1
+   Compiling midn-auth v0.1.0 (/home/runner/work/midn/midn/crates/midn-auth)
+    Finished `release` profile [optimized] target(s) in 45.29s
+     Running unittests src/lib.rs (target/release/deps/midn_auth-cc452560572f5fe7)
+
+running 18 tests
+test keys::tests::auth_key_from_hex_rejects_short ... ok
+test keys::tests::auth_key_from_hex_roundtrip ... ok
+test keys::tests::sqn_increment_wraps ... ok
+test keys::tests::sqn_round_trip ... ok
+test milenage::tests::aes128_nist_vector ... ok
+test milenage::tests::diagnose_f1_input_step_by_step ... FAILED
+test milenage::tests::diagnose_f_function_isolation ... FAILED
+test milenage::tests::compute_opc_test_set_1 ... ok
+test milenage::tests::test_set_1 ... FAILED
+test milenage::tests::test_set_1_autn_construction ... FAILED
+test milenage::tests::test_set_2 ... FAILED
+test milenage::tests::test_set_3 ... FAILED
+test milenage::tests::test_set_4 ... ignored, fill in from 3GPP TS 35.207 Test Set 4
+test milenage::tests::test_set_5 ... ignored, fill in from 3GPP TS 35.207 Test Set 5
+test milenage::tests::test_set_6 ... ignored, fill in from 3GPP TS 35.207 Test Set 6
+test milenage::tests::verify_res_accepts_matching ... ok
+test milenage::tests::verify_res_rejects_off_by_one ... ok
+test milenage::tests::verify_res_rejects_wrong ... ok
+
+successes:
+
+successes:
+    keys::tests::auth_key_from_hex_rejects_short
+    keys::tests::auth_key_from_hex_roundtrip
+    keys::tests::sqn_increment_wraps
+    keys::tests::sqn_round_trip
+    milenage::tests::aes128_nist_vector
+    milenage::tests::compute_opc_test_set_1
+    milenage::tests::verify_res_accepts_matching
+    milenage::tests::verify_res_rejects_off_by_one
+    milenage::tests::verify_res_rejects_wrong
+
+failures:
+
+---- milenage::tests::diagnose_f1_input_step_by_step stdout ----
+
+thread 'milenage::tests::diagnose_f1_input_step_by_step' (6037) panicked at crates/midn-auth/src/milenage.rs:192:9:
+assertion `left == right` failed: after rotation
+  left: "f993ac100b4dcd0d534a4bb402734529"
+ right: "f993ac100b7e410d534a4bb402734529"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- milenage::tests::diagnose_f_function_isolation stdout ----
+
+thread 'milenage::tests::diagnose_f_function_isolation' (6038) panicked at crates/midn-auth/src/milenage.rs:222:9:
+assertion `left == right` failed: f1 MAC-A
+  left: "70e048158e4e8503"
+ right: "4a9ffac354dfafb3"
+
+---- milenage::tests::test_set_1 stdout ----
+
+thread 'milenage::tests::test_set_1' (6039) panicked at crates/midn-auth/src/milenage.rs:240:9:
+assertion `left == right` failed: Test Set 1: MAC-A
+  left: "70e048158e4e8503"
+ right: "4a9ffac354dfafb3"
+
+---- milenage::tests::test_set_1_autn_construction stdout ----
+
+thread 'milenage::tests::test_set_1_autn_construction' (6040) panicked at crates/midn-auth/src/milenage.rs:308:9:
+assertion `left == right` failed
+  left: "9e8b7796abadb9b9dbee4553bf8c00bb"
+ right: "55f328b43577b9b94a9ffac354dfafb3"
+
+---- milenage::tests::test_set_2 stdout ----
+
+thread 'milenage::tests::test_set_2' (6041) panicked at crates/midn-auth/src/milenage.rs:237:9:
+assertion `left == right` failed: Test Set 2: XRES
+  left: "5d3110ac0aa2b01a"
+ right: "8a3a8decca3b6c0d"
+
+---- milenage::tests::test_set_3 stdout ----
+
+thread 'milenage::tests::test_set_3' (6042) panicked at crates/midn-auth/src/milenage.rs:238:9:
+assertion `left == right` failed: Test Set 3: CK
+  left: "5dbdbb2954e8f3cde665b046179a5098"
+ right: "5dbcbcb0800ccef0848720b5bf6c2e1a"
+
+
+failures:
+    milenage::tests::diagnose_f1_input_step_by_step
+    milenage::tests::diagnose_f_function_isolation
+    milenage::tests::test_set_1
+    milenage::tests::test_set_1_autn_construction
+    milenage::tests::test_set_2
+    milenage::tests::test_set_3
+
+test result: FAILED. 9 passed; 6 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p midn-auth --lib`
+   Doc-tests midn_auth
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `-p midn-auth --lib`
