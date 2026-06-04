@@ -4,15 +4,18 @@
 # Run manually: Actions → "midn-core: Benchmarks" → Run workflow
 # DO NOT add push/pull_request triggers — benches take 10-20 minutes.
 #
-# Build #4 baselines (2026-05-25):
-#   verify_res_constant_time  : 12.795 ns  (gate < 25 ns)
-#   gtpu_parser_gpdu_minimal  : 2.187 ns   (gate < 500 ns)
-#   nas_encode_auth_request   : 78.383 ns  (gate < 500 ns)
-#   nas_imsi_bcd_encode       : ~40 ns     (gate < 100 ns — fixed in ie.rs, was 100.21 ns)
-#   ecs_spawn                 : 947.56 ps  (gate < 1 µs)
-#   ecs_despawn_zeroize       : 217.20 ns  (gate < 5 µs)
-#   routing_table_lookup_ul   : 12.783 ns  (gate < 50 ns)
-#   tunnel_create             : 260.39 ns  (gate < 1 µs)
+# Build #5 baselines (2026-05-26):
+#   milenage_generate_vector  : 603.07 ps  (was stub — Build #6+ has real number)
+#   milenage_core_fixed_rand  : pending Build #6 (new bench, Phase 1 closed)
+#   verify_res_constant_time  : 10.370 ns  (gate < 25 ns)
+#   generate_rand_os_csprng   : 36.356 ns  (gate < 100 ns)
+#   gtpu_parser_gpdu_minimal  : 1.736 ns   (gate < 500 ns)
+#   nas_encode_auth_request   : 102.69 ns  (gate < 500 ns)
+#   nas_imsi_bcd_encode       : 22.311 ns  (gate < 100 ns)
+#   ecs_spawn                 : 770.45 ps  (gate < 1 µs)
+#   ecs_despawn_zeroize       : 182.44 ns  (gate < 5 µs)
+#   routing_table_lookup_ul   : 12.705 ns  (gate < 50 ns)
+#   tunnel_create             : 237.64 ns  (gate < 1 µs)
 
 name: midn-core — Benchmarks
 
@@ -114,62 +117,59 @@ jobs:
           )
 
           # IMPORTANT: longer / more specific keys MUST come before any key that
-          # is a substring of them. The matcher does `if frag in key` — if
-          # "ecs_spawn" were listed before "ecs_spawn_with_all_components" it
-          # would steal that benchmark's gate. Ordered longest → shortest within
-          # each family.
+          # is a substring of them.
           GATES_ORDERED = [
               # midn-auth
-              ('milenage_generate_vector',          10_000, 'ns',  10_000),
-              ('verify_res_constant_time',          25,     'ns',  25),
-              ('generate_rand_os_csprng',           100,    'ns',  100),
+              ('milenage_core_fixed_rand',           10_000, 'ns',  10_000),
+              ('milenage_generate_vector',           10_000, 'ns',  10_000),
+              ('verify_res_constant_time',           25,     'ns',  25),
+              ('generate_rand_os_csprng',            100,    'ns',  100),
               # midn-proto GTP-U
-              ('gtpu_header_serialize_round_trip',  500,    'ns',  500),
-              ('gtpu_parser_gpdu_with_seq',         500,    'ns',  500),
-              ('gtpu_parser_gpdu_minimal',          500,    'ns',  500),
-              ('gtpu_header_parse',                 500,    'ns',  500),
+              ('gtpu_header_serialize_round_trip',   500,    'ns',  500),
+              ('gtpu_parser_gpdu_with_seq',          500,    'ns',  500),
+              ('gtpu_parser_gpdu_minimal',           500,    'ns',  500),
+              ('gtpu_header_parse',                  500,    'ns',  500),
               # midn-proto NAS codec — longer names first
-              ('nas_encode_sec_mode_complete',      500,    'ns',  500),
-              ('nas_encode_sec_mode_cmd',           500,    'ns',  500),
-              ('nas_decode_attach_request',         1_000,  'ns',  1_000),
-              ('nas_encode_attach_request',         1_000,  'ns',  1_000),
-              ('nas_decode_attach_accept',          1_000,  'ns',  1_000),
-              ('nas_encode_attach_accept',          1_000,  'ns',  1_000),
-              ('nas_decode_auth_response',          500,    'ns',  500),
-              ('nas_encode_auth_response',          500,    'ns',  500),
-              ('nas_decode_auth_request',           500,    'ns',  500),
-              ('nas_encode_auth_request',           500,    'ns',  500),
-              ('nas_auth_round_trip',               1_000,  'ns',  1_000),
-              ('nas_imsi_bcd_encode',               100,    'ns',  100),
-              ('nas_imsi_bcd_decode',               100,    'ns',  100),
-              # midn-core ECS — longer names first to avoid ecs_spawn stealing
-              ('ecs_spawn_with_all_components',     5_000,  'ns',  5_000),
-              ('with_security_context_zeroize',     5_000,  'ns',  5_000),
-              ('ecs_lookup_auth_state',             100,    'ns',  100),
-              ('ecs_is_authenticated',              100,    'ns',  100),
-              ('ecs_spawn',                         1_000,  'ns',  1_000),
+              ('nas_encode_sec_mode_complete',       500,    'ns',  500),
+              ('nas_encode_sec_mode_cmd',            500,    'ns',  500),
+              ('nas_decode_attach_request',          1_000,  'ns',  1_000),
+              ('nas_encode_attach_request',          1_000,  'ns',  1_000),
+              ('nas_decode_attach_accept',           1_000,  'ns',  1_000),
+              ('nas_encode_attach_accept',           1_000,  'ns',  1_000),
+              ('nas_decode_auth_response',           500,    'ns',  500),
+              ('nas_encode_auth_response',           500,    'ns',  500),
+              ('nas_decode_auth_request',            500,    'ns',  500),
+              ('nas_encode_auth_request',            500,    'ns',  500),
+              ('nas_auth_round_trip',                1_000,  'ns',  1_000),
+              ('nas_imsi_bcd_encode',                100,    'ns',  100),
+              ('nas_imsi_bcd_decode',                100,    'ns',  100),
+              # midn-core ECS — longer names first
+              ('ecs_spawn_with_all_components',      5_000,  'ns',  5_000),
+              ('with_security_context_zeroize',      5_000,  'ns',  5_000),
+              ('ecs_lookup_auth_state',              100,    'ns',  100),
+              ('ecs_is_authenticated',               100,    'ns',  100),
+              ('ecs_spawn',                          1_000,  'ns',  1_000),
               # midn-core registry
-              ('registry_lookup_miss',              100,    'ns',  100),
-              ('registry_lookup_hit',               100,    'ns',  100),
-              ('registry_register',                 500,    'ns',  500),
+              ('registry_lookup_miss',               100,    'ns',  100),
+              ('registry_lookup_hit',                100,    'ns',  100),
+              ('registry_register',                  500,    'ns',  500),
               # midn-core HSS
-              ('hss_provision_subscriber',          1_000,  'ns',  1_000),
-              ('hss_lookup_miss',                   50,     'ns',  50),
-              ('hss_lookup_hit',                    50,     'ns',  50),
+              ('hss_provision_subscriber',           1_000,  'ns',  1_000),
+              ('hss_lookup_miss',                    50,     'ns',  50),
+              ('hss_lookup_hit',                     50,     'ns',  50),
               # midn-userplane routing — longer names first
-              ('routing_table_lookup_ul_miss',      50,     'ns',  50),
-              ('routing_table_lookup_ul',           50,     'ns',  50),
-              ('routing_table_lookup_dl',           50,     'ns',  50),
-              ('routing_table_install',             500,    'ns',  500),
-              ('routing_table_remove',              500,    'ns',  500),
+              ('routing_table_lookup_ul_miss',       50,     'ns',  50),
+              ('routing_table_lookup_ul',            50,     'ns',  50),
+              ('routing_table_lookup_dl',            50,     'ns',  50),
+              ('routing_table_install',              500,    'ns',  500),
+              ('routing_table_remove',               500,    'ns',  500),
               # midn-userplane tunnel
-              ('tunnel_create',                     1_000,  'ns',  1_000),
-              ('tunnel_destroy',                    500,    'ns',  500),
+              ('tunnel_create',                      1_000,  'ns',  1_000),
+              ('tunnel_destroy',                     500,    'ns',  500),
           ]
 
-          STUB_NOTES = {
-              'milenage_generate_vector': ' *(stub — real measurement pending Phase 1)*',
-          }
+          # Phase 1 complete — no stubs remaining.
+          STUB_NOTES = {}
 
           def parse_time_to_ns(time_str):
               parts = time_str.strip().split()
@@ -243,27 +243,31 @@ jobs:
             echo ""
             echo "| Crate | Phase | Key Gate | Status |"
             echo "|---|---|---|---|"
-            echo "| \`midn-auth\` | 1 — active | Milenage < 10 µs | \`generate_vector\` stubbed — un-ignore test sets to close Phase 1 |"
+            echo "| \`midn-auth\` | 1 ✅ | Milenage < 10 µs | Phase 1 complete (Build #52) — test sets 1-3 ✅; sets 4-6 pending spec values |"
             echo "| \`midn-proto\` | 2 ✅ | GTP-U < 500 ns, NAS < 500 ns | Parser + codec complete, all gates green |"
-            echo "| \`midn-core\` | 2 ✅ | ECS spawn ~947 ps, despawn 217 ns | Attach procedure wired, all gates green |"
-            echo "| \`midn-userplane\` | 2/3 ✅ | Routing lookup 12 ns | Userspace routing complete; XDP steering Phase 3 |"
+            echo "| \`midn-core\` | 2 ✅ | ECS spawn ~770 ps, despawn 182 ns | Attach procedure wired, all gates green |"
+            echo "| \`midn-userplane\` | 3 — active | Routing lookup 12 ns | Userspace routing complete; GTP-U UDP socket + XDP steering next |"
             echo ""
-            echo "### Build #4 Baselines (2026-05-25)"
+            echo "### Build #5 Baselines (2026-05-26)"
             echo ""
             echo "| Benchmark | Baseline | Gate | Headroom |"
             echo "|---|---|---|---|"
-            echo "| \`verify_res_constant_time\` | 12.795 ns | < 25 ns | 2.0× |"
-            echo "| \`gtpu_parser_gpdu_minimal\` | 2.187 ns | < 500 ns | 228× |"
-            echo "| \`nas_encode_auth_request\` | 78.383 ns | < 500 ns | 6.4× |"
-            echo "| \`nas_imsi_bcd_encode\` | ~40 ns (post-fix) | < 100 ns | ~2.5× |"
-            echo "| \`ecs_spawn\` | 947.56 ps | < 1 µs | 1055× |"
-            echo "| \`ecs_spawn_with_all_components\` | 733.44 ns | < 5 µs | 6.8× |"
-            echo "| \`ecs_despawn_zeroize\` | 217.20 ns | < 5 µs | 23× |"
-            echo "| \`routing_table_lookup_ul\` | 12.783 ns | < 50 ns | 3.9× |"
-            echo "| \`tunnel_create\` | 260.39 ns | < 1 µs | 3.8× |"
+            echo "| \`milenage_generate_vector\` | pending Build #6 (was stub) | < 10 µs | expected ~10× |"
+            echo "| \`milenage_core_fixed_rand\` | pending Build #6 (new bench) | < 10 µs | expected ~10× |"
+            echo "| \`verify_res_constant_time\` | 10.370 ns | < 25 ns | 2.4× |"
+            echo "| \`generate_rand_os_csprng\` | 36.356 ns | < 100 ns | 2.8× |"
+            echo "| \`gtpu_parser_gpdu_minimal\` | 1.736 ns | < 500 ns | 288× |"
+            echo "| \`nas_encode_auth_request\` | 102.69 ns | < 500 ns | 4.9× |"
+            echo "| \`nas_imsi_bcd_encode\` | 22.311 ns | < 100 ns | 4.5× |"
+            echo "| \`ecs_spawn\` | 770.45 ps | < 1 µs | 1298× |"
+            echo "| \`ecs_spawn_with_all_components\` | 940.55 ns | < 5 µs | 5.3× |"
+            echo "| \`ecs_despawn_zeroize\` | 182.44 ns | < 5 µs | 27× |"
+            echo "| \`routing_table_lookup_ul\` | 12.705 ns | < 50 ns | 3.9× |"
+            echo "| \`tunnel_create\` | 237.64 ns | < 1 µs | 4.2× |"
             echo ""
-            echo "> Build #4 fix: \`nas_imsi_bcd_encode\` crossed 100 ns gate (was 100.21 ns)."
-            echo "> Root cause: \`format!()\` heap allocation removed in ie.rs. Expected ~40 ns post-fix."
+            echo "> Build #5 note: \`milenage_generate_vector\` stub removed."
+            echo "> Build #6 will record the first real Milenage gate measurement."
+            echo "> Expected: ~1 µs (AES-NI) split as getrandom ~36 ns + AES crypto ~900 ns."
 
           } >> $GITHUB_STEP_SUMMARY
 
