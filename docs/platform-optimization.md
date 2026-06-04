@@ -42,71 +42,80 @@ A packet arriving before the map entry exists falls to XDP_PASS
 
 ---
 
-## Build #11 Baseline — Official (rustc 1.95.0, ubuntu-latest, 2026)
+## Build #5 Baselines — Official (rustc 1.95.0, ubuntu-latest, 2026-05-26)
 
-First confirmed `[RELEASE]` numbers. These are the reference point for
-all future optimization decisions.
+Phase 1 and Phase 2 complete. First build with real Milenage numbers pending (Build #6).
 
 ### midn-auth
 
 | Benchmark | Mean [RELEASE] | Gate | Status |
 |---|---|---|---|
-| `verify_res_constant_time` | 12.800 ns | < 25 ns | ✅ |
-| `generate_rand_os_csprng` | 42.047 ns | < 100 ns | ✅ |
-| `milenage_generate_vector` | ~1 ns (stub) | < 10 µs | stub — not real |
+| `milenage_generate_vector` | **pending Build #6** | < 10 µs | real bench active as of Build #6 |
+| `milenage_core_fixed_rand` | **pending Build #6** | < 10 µs | new bench — pure AES cost, no getrandom |
+| `verify_res_constant_time` | 10.370 ns | < 25 ns | ✅ |
+| `generate_rand_os_csprng` | 36.356 ns | < 100 ns | ✅ |
 
 **Notes:**
-- `verify_res` at 12.8 ns is the expected cost of `subtle::ConstantTimeEq`
-  on an 8-byte array. This is correct behavior.
-- `milenage_generate_vector` measures only `black_box` overhead; the actual
-  function is `todo!()`. Gate becomes meaningful at Phase 1 completion.
-- `generate_rand_os_csprng` at 42 ns reflects one `getrandom(2)` syscall.
-  Batching RANDs (generate N at once) is a Phase 1 optimization if needed.
+- `milenage_generate_vector` stub removed in Build #6. Expected ~1.0–1.1 µs on AES-NI.
+- `milenage_core_fixed_rand` is a new bench isolating pure crypto from getrandom.
+  The difference between these two benches should track the getrandom baseline (~36 ns).
+- `verify_res` at 10.4 ns is correct constant-time behavior. Do not "optimize" it.
 
 ### midn-proto
 
 | Benchmark | Mean [RELEASE] | Gate | Status |
 |---|---|---|---|
-| `gtpu_header_parse` | 6.539 ns | < 500 ns | ✅ (~76× under gate) |
-| `gtpu_parser_gpdu_minimal` | 1.881 ns | < 500 ns | ✅ (~265× under gate) |
-| `gtpu_parser_gpdu_with_seq` | 2.208 ns | < 500 ns | ✅ |
-| `gtpu_header_serialize_round_trip` | 2.804 ns | < 500 ns | ✅ |
-| `bulk_parse/10` | 16.527 ns | — | 1.65 ns/packet |
-| `bulk_parse/100` | 164.31 ns | — | 1.64 ns/packet |
-| `bulk_parse/1000` | 1.684 µs | — | 1.68 ns/packet |
+| `gtpu_parser_gpdu_minimal` | 1.736 ns | < 500 ns | ✅ (~288× under gate) |
+| `gtpu_parser_gpdu_with_seq` | 1.738 ns | < 500 ns | ✅ |
+| `gtpu_header_serialize_round_trip` | 1.767 ns | < 500 ns | ✅ |
+| `nas_encode_auth_request` | 102.69 ns | < 500 ns | ✅ |
+| `nas_decode_auth_request` | 15.571 ns | < 500 ns | ✅ |
+| `nas_imsi_bcd_encode` | 22.311 ns | < 100 ns | ✅ |
+| `nas_imsi_bcd_decode` | 24.409 ns | < 100 ns | ✅ |
+| `nas_auth_round_trip` | 126.32 ns | < 1000 ns | ✅ |
 
-**Notes:**
-- GTP-U parser is well under gate at all batch sizes. No Tier 2 work needed.
-- Linear scaling in bulk parse (1.65-1.68 ns/packet) confirms no per-batch
-  overhead — LLVM is auto-vectorizing the parse loop.
-- 500 ns gate is intentionally conservative. It will only become relevant
-  if a regression occurs, not as an optimization target.
+### midn-core
+
+| Benchmark | Mean [RELEASE] | Gate | Status |
+|---|---|---|---|
+| `ecs_spawn` | 770.45 ps | < 1 µs | ✅ (1298× headroom) |
+| `ecs_spawn_with_all_components` | 940.55 ns | < 5 µs | ✅ |
+| `ecs_despawn_zeroize` | 182.44 ns | < 5 µs | ✅ |
+| `ecs_lookup_auth_state` | 12.929 ns | < 100 ns | ✅ |
+| `registry_lookup_hit` | 14.176 ns | < 100 ns | ✅ |
+| `hss_provision_subscriber` | 94.924 ns | < 1000 ns | ✅ |
+
+### midn-userplane
+
+| Benchmark | Mean [RELEASE] | Gate | Status |
+|---|---|---|---|
+| `routing_table_lookup_ul` | 12.705 ns | < 50 ns | ✅ |
+| `routing_table_lookup_dl` | 13.725 ns | < 50 ns | ✅ |
+| `tunnel_create` | 237.64 ns | < 1 µs | ✅ |
+| `tunnel_destroy` | 69.353 ns | < 500 ns | ✅ |
 
 ---
 
-## Optimization Priority Queue (Post Build #11)
+## Optimization Priority Queue (Post Build #5)
 
-Based on the first baseline:
+**CLOSED — GTP-U parser** (~288× under gate, LLVM auto-vectorized, no action needed)
 
-**Not needed — GTP-U parser (already ~265× under gate)**
+**CLOSED — verify_res** (correct at 10.4 ns, constant-time working as intended)
 
-The parser is allocation-free and LLVM-auto-vectorized. Adding manual
-intrinsics would provide no measurable benefit. Closed.
+**CLOSED — Phase 1 Milenage** (generate_vector implemented, Build #52 validates all test sets 1-3)
 
-**Not needed — verify_res (correct at 12.8 ns)**
+Build #6 will establish the real `milenage_generate_vector` baseline.
+If it comes in above 5 µs, investigate AES-NI feature flag in Cargo.toml.
+If it comes in above 10 µs (gate breach), profile with perf/flamegraph.
 
-Constant-time is working as intended. Any "optimization" that reduces this
-below ~10 ns is a regression in security, not a performance win. Closed.
+**Phase 3 — GTP-U UDP socket (active)**
 
-**Phase 1 — Milenage generate_vector (stub)**
+The userspace routing table benchmarks at 12 ns/lookup. Next step is
+wiring it to a real Tokio `UdpSocket` on port 2152. The full
+receive-parse-lookup-forward path should target < 5 µs userspace,
+then < 200 ns once XDP takes over the fast path.
 
-The only current performance gap is that `generate_vector` is not
-implemented. Phase 1 target: < 10 µs after f1..f5 are in place.
-AES-128 on modern x86_64 using AES-NI intrinsics (via the `aes` crate)
-should reach 1-3 µs. Scalar fallback for non-AES-NI targets should
-reach 5-8 µs.
+**Phase 3 — eBPF/XDP routing (pending GTP-U socket)**
 
-**Phase 3 — eBPF/XDP routing (not yet measurable)**
-
-XDP packet decision target: < 200 ns. Baseline will be established
-in Build #1 of the Phase 3 branch.
+XDP packet decision target: < 200 ns. Baseline to be established
+once the userspace path is working and the BPF map is populated.
