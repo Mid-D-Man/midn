@@ -11,19 +11,25 @@
 //! ## Data plane flow
 //!
 //! ```text
-//! [UE] → [eNodeB] → GTP-U/UDP → [UPF: midn-userplane] → [Internet]
+//! [UE] → [eNodeB] → GTP-U/UDP → [UPF] → [Internet]
 //!
-//! UL path (UE → Internet):
-//!   1. Receive UDP on port 2152
-//!   2. Parse GTP-U header → extract TEID
-//!   3. RoutingTable::lookup(teid) → RouteEntry
-//!   4. Decapsulate: strip GTP-U, send inner IP to PDN
+//! UL: recv UDP:2152 → GtpuParser → lookup_ul(TEID) → strip GTP-U → PDN
+//! DL: recv IP → lookup_dl(UE IP) → prepend GTP-U → send UDP → eNodeB
+//! ```
 //!
-//! DL path (Internet → UE):
-//!   1. Receive IP packet destined for UE address
-//!   2. RoutingTable::reverse_lookup(ue_ip) → RouteEntry
-//!   3. Encapsulate: add GTP-U header with dl_teid
-//!   4. Send UDP to enb_addr:enb_port
+//! ## Component hierarchy
+//!
+//! ```text
+//! SessionManager  ← production entry point
+//!   ├── Arc<Mutex<RoutingTable>>  ← shared with GtpForwarder
+//!   └── HashMap<ul_teid, UserPlaneSession>
+//!
+//! GtpForwarder  ← owns the UDP socket on port 2152
+//!   ├── Arc<Mutex<RoutingTable>>  ← same Arc as SessionManager
+//!   ├── mpsc::Sender<UlPacket>   ← emits decapsulated UL packets
+//!   └── mpsc::Receiver<DlPacket> ← receives DL packets to encapsulate
+//!
+//! TunnelManager  ← lower-level building block (kept for bench suite)
 //! ```
 
 pub mod upf;
@@ -31,6 +37,8 @@ pub mod upf;
 #[cfg(target_os = "linux")]
 pub mod ebpf;
 
+pub use upf::forwarder::{DlPacket, GtpForwarder, UlPacket, GTP_PORT};
 pub use upf::routing::RoutingTable;
 pub use upf::session::UserPlaneSession;
+pub use upf::session_manager::SessionManager;
 pub use upf::tunnel::TunnelManager;
