@@ -24,7 +24,10 @@
 //!   → UE sends AttachComplete → subscriber online
 //! ```
 
+
+//! MME — Mobility Management Entity (3GPP TS 23.401 / 36.413)
+
 pub mod attach;
 pub mod state_machine;
 
-pub use state_machine::Mme;
+pub use state_machine::{Mme, UpfEvent};
