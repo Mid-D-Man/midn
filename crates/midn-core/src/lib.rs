@@ -23,6 +23,7 @@
 //!   └── Updates ECS world state
 //! ```
 
+
 pub mod ecs;
 pub mod hss;
 pub mod mme;
@@ -34,4 +35,4 @@ pub use ecs::components::{
 pub use ecs::registry::ImsiRegistry;
 pub use ecs::world::{CoreWorld, EntityId};
 pub use hss::Hss;
-pub use mme::Mme;
+pub use mme::{Mme, UpfEvent};
