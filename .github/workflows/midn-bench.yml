@@ -4,18 +4,19 @@
 # Run manually: Actions → "midn-core: Benchmarks" → Run workflow
 # DO NOT add push/pull_request triggers — benches take 10-20 minutes.
 #
-# Build #5 baselines (2026-05-26):
-#   milenage_generate_vector  : 603.07 ps  (was stub — Build #6+ has real number)
-#   milenage_core_fixed_rand  : pending Build #6 (new bench, Phase 1 closed)
-#   verify_res_constant_time  : 10.370 ns  (gate < 25 ns)
-#   generate_rand_os_csprng   : 36.356 ns  (gate < 100 ns)
-#   gtpu_parser_gpdu_minimal  : 1.736 ns   (gate < 500 ns)
-#   nas_encode_auth_request   : 102.69 ns  (gate < 500 ns)
-#   nas_imsi_bcd_encode       : 22.311 ns  (gate < 100 ns)
-#   ecs_spawn                 : 770.45 ps  (gate < 1 µs)
-#   ecs_despawn_zeroize       : 182.44 ns  (gate < 5 µs)
-#   routing_table_lookup_ul   : 12.705 ns  (gate < 50 ns)
-#   tunnel_create             : 237.64 ns  (gate < 1 µs)
+# Build #7 baselines (2026-06-04, rustc 1.96.0):
+#   milenage_generate_vector  : 514.32 ns  (gate < 10 µs — first real number, AES-NI)
+#   milenage_core_fixed_rand  : 510.30 ns  (gate < 10 µs — pure AES, no getrandom)
+#   verify_res_constant_time  : 14.465 ns  (gate < 25 ns)
+#   generate_rand_os_csprng   : 45.128 ns  (gate < 100 ns)
+#   gtpu_parser_gpdu_minimal  : 1.764 ns   (gate < 500 ns)
+#   nas_encode_auth_request   : 82.978 ns  (gate < 500 ns)
+#   nas_imsi_bcd_encode       : 27.764 ns  (gate < 100 ns)
+#   ecs_spawn                 : 1.070 ns   (gate < 1 µs)
+#   ecs_spawn_with_all_components : 397.06 ns (gate < 5 µs)
+#   ecs_despawn_zeroize       : 208.07 ns  (gate < 5 µs)
+#   routing_table_lookup_ul   : 13.583 ns  (gate < 50 ns)
+#   tunnel_create             : 219.92 ns  (gate < 1 µs)
 
 name: midn-core — Benchmarks
 
@@ -168,7 +169,6 @@ jobs:
               ('tunnel_destroy',                     500,    'ns',  500),
           ]
 
-          # Phase 1 complete — no stubs remaining.
           STUB_NOTES = {}
 
           def parse_time_to_ns(time_str):
@@ -243,31 +243,27 @@ jobs:
             echo ""
             echo "| Crate | Phase | Key Gate | Status |"
             echo "|---|---|---|---|"
-            echo "| \`midn-auth\` | 1 ✅ | Milenage < 10 µs | Phase 1 complete (Build #52) — test sets 1-3 ✅; sets 4-6 pending spec values |"
-            echo "| \`midn-proto\` | 2 ✅ | GTP-U < 500 ns, NAS < 500 ns | Parser + codec complete, all gates green |"
-            echo "| \`midn-core\` | 2 ✅ | ECS spawn ~770 ps, despawn 182 ns | Attach procedure wired, all gates green |"
-            echo "| \`midn-userplane\` | 3 — active | Routing lookup 12 ns | Userspace routing complete; GTP-U UDP socket + XDP steering next |"
+            echo "| \`midn-auth\` | 1 ✅ | Milenage < 10 µs | Phase 1 complete — 514 ns (Build #7); test sets 1-3 ✅; sets 4-6 pending spec values |"
+            echo "| \`midn-proto\` | 2 ✅ | GTP-U < 500 ns, NAS < 1 µs | Parser + codec complete, all gates green |"
+            echo "| \`midn-core\` | 2 ✅ | ECS spawn 1 ns, despawn 208 ns | Full attach + Phase 3 ICSR flow complete, all gates green |"
+            echo "| \`midn-userplane\` | 3 — active | Routing lookup 13 ns | GTP-U UDP forwarder + SessionManager + ICSR bearer wiring complete; XDP fast path next |"
             echo ""
-            echo "### Build #5 Baselines (2026-05-26)"
+            echo "### Build #7 Baselines (2026-06-04)"
             echo ""
-            echo "| Benchmark | Baseline | Gate | Headroom |"
-            echo "|---|---|---|---|"
-            echo "| \`milenage_generate_vector\` | pending Build #6 (was stub) | < 10 µs | expected ~10× |"
-            echo "| \`milenage_core_fixed_rand\` | pending Build #6 (new bench) | < 10 µs | expected ~10× |"
-            echo "| \`verify_res_constant_time\` | 10.370 ns | < 25 ns | 2.4× |"
-            echo "| \`generate_rand_os_csprng\` | 36.356 ns | < 100 ns | 2.8× |"
-            echo "| \`gtpu_parser_gpdu_minimal\` | 1.736 ns | < 500 ns | 288× |"
-            echo "| \`nas_encode_auth_request\` | 102.69 ns | < 500 ns | 4.9× |"
-            echo "| \`nas_imsi_bcd_encode\` | 22.311 ns | < 100 ns | 4.5× |"
-            echo "| \`ecs_spawn\` | 770.45 ps | < 1 µs | 1298× |"
-            echo "| \`ecs_spawn_with_all_components\` | 940.55 ns | < 5 µs | 5.3× |"
-            echo "| \`ecs_despawn_zeroize\` | 182.44 ns | < 5 µs | 27× |"
-            echo "| \`routing_table_lookup_ul\` | 12.705 ns | < 50 ns | 3.9× |"
-            echo "| \`tunnel_create\` | 237.64 ns | < 1 µs | 4.2× |"
-            echo ""
-            echo "> Build #5 note: \`milenage_generate_vector\` stub removed."
-            echo "> Build #6 will record the first real Milenage gate measurement."
-            echo "> Expected: ~1 µs (AES-NI) split as getrandom ~36 ns + AES crypto ~900 ns."
+            echo "| Benchmark | Build #7 | Build #5 | Gate | Headroom |"
+            echo "|---|---|---|---|---|"
+            echo "| \`milenage_generate_vector\` | **514.32 ns** | stub | < 10 µs | ~19× |"
+            echo "| \`milenage_core_fixed_rand\` | **510.30 ns** | — (new) | < 10 µs | ~19× |"
+            echo "| \`verify_res_constant_time\` | 14.465 ns | 10.370 ns | < 25 ns | 1.7× |"
+            echo "| \`generate_rand_os_csprng\` | 45.128 ns | 36.356 ns | < 100 ns | 2.2× |"
+            echo "| \`gtpu_parser_gpdu_minimal\` | 1.764 ns | 1.736 ns | < 500 ns | 283× |"
+            echo "| \`nas_encode_auth_request\` | 82.978 ns | 102.69 ns | < 500 ns | 6× |"
+            echo "| \`nas_imsi_bcd_encode\` | 27.764 ns | 22.311 ns | < 100 ns | 3.6× |"
+            echo "| \`ecs_spawn\` | 1.070 ns | 770.45 ps | < 1 µs | 935× |"
+            echo "| \`ecs_spawn_with_all_components\` | 397.06 ns | 940.55 ns | < 5 µs | **12.6×** (iter_batched fix) |"
+            echo "| \`ecs_despawn_zeroize\` | 208.07 ns | 182.44 ns | < 5 µs | 24× |"
+            echo "| \`routing_table_lookup_ul\` | 13.583 ns | 12.705 ns | < 50 ns | 3.7× |"
+            echo "| \`tunnel_create\` | 219.92 ns | 237.64 ns | < 1 µs | 4.5× |"
 
           } >> $GITHUB_STEP_SUMMARY
 
