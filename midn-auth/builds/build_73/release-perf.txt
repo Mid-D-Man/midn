@@ -1,0 +1,179 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling proc-macro2 v1.0.106
+   Compiling quote v1.0.45
+   Compiling unicode-ident v1.0.24
+   Compiling cfg-if v1.0.4
+   Compiling zerocopy v0.8.52
+   Compiling libc v0.2.186
+   Compiling version_check v0.9.5
+   Compiling syn v2.0.117
+   Compiling generic-array v0.14.7
+   Compiling crossbeam-utils v0.8.21
+   Compiling serde_core v1.0.228
+   Compiling typenum v1.20.1
+   Compiling zerocopy-derive v0.8.52
+   Compiling zmij v1.0.21
+   Compiling autocfg v1.5.1
+   Compiling serde v1.0.228
+   Compiling num-traits v0.2.19
+   Compiling serde_derive v1.0.228
+   Compiling crossbeam-epoch v0.9.18
+   Compiling getrandom v0.2.17
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling serde_json v1.0.150
+   Compiling rand_core v0.6.4
+   Compiling crossbeam-deque v0.8.6
+   Compiling half v2.7.1
+   Compiling ppv-lite86 v0.2.21
+   Compiling zeroize_derive v1.4.3
+   Compiling crypto-common v0.1.7
+   Compiling inout v0.1.4
+   Compiling anstyle v1.0.14
+   Compiling regex-syntax v0.8.11
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling memchr v2.8.2
+   Compiling clap_lex v1.1.0
+   Compiling itoa v1.0.18
+   Compiling clap_builder v4.6.0
+   Compiling regex-automata v0.4.14
+   Compiling ciborium-ll v0.2.2
+   Compiling plotters-svg v0.3.7
+   Compiling zeroize v1.8.2
+   Compiling cipher v0.4.4
+   Compiling rand_chacha v0.3.1
+   Compiling itertools v0.10.5
+   Compiling cpufeatures v0.2.17
+   Compiling same-file v1.0.6
+   Compiling cast v0.3.0
+   Compiling walkdir v2.5.0
+   Compiling criterion-plot v0.5.0
+   Compiling aes v0.8.4
+   Compiling rayon v1.12.0
+   Compiling plotters v0.3.7
+   Compiling rand v0.8.6
+   Compiling ciborium v0.2.2
+   Compiling regex v1.12.4
+   Compiling clap v4.6.1
+   Compiling tinytemplate v1.2.1
+   Compiling is-terminal v0.4.17
+   Compiling subtle v2.6.1
+   Compiling hex v0.4.3
+   Compiling once_cell v1.21.4
+   Compiling anes v0.1.6
+   Compiling oorandom v11.1.5
+   Compiling criterion v0.5.1
+   Compiling midn-auth v0.1.0 (/home/runner/work/midn/midn/crates/midn-auth)
+    Finished `release` profile [optimized] target(s) in 48.12s
+     Running unittests src/lib.rs (target/release/deps/midn_auth-98afc2c7749b32f4)
+
+running 16 tests
+test keys::tests::auth_key_from_hex_rejects_short ... ok
+test keys::tests::auth_key_from_hex_roundtrip ... ok
+test keys::tests::sqn_increment_wraps ... ok
+test keys::tests::sqn_round_trip ... ok
+test milenage::tests::aes128_nist_vector ... ok
+test milenage::tests::compute_opc_test_set_1 ... ok
+test milenage::tests::test_set_1 ... ok
+test milenage::tests::test_set_1_autn_construction ... ok
+test milenage::tests::test_set_2 ... ok
+test milenage::tests::test_set_3 ... ok
+test milenage::tests::test_set_4 ... ignored, fill in from 3GPP TS 35.207 Test Set 4
+test milenage::tests::test_set_5 ... ignored, fill in from 3GPP TS 35.207 Test Set 5
+test milenage::tests::test_set_6 ... ignored, fill in from 3GPP TS 35.207 Test Set 6
+test milenage::tests::verify_res_accepts_matching ... ok
+test milenage::tests::verify_res_rejects_off_by_one ... ok
+test milenage::tests::verify_res_rejects_wrong ... ok
+
+successes:
+
+---- milenage::tests::aes128_nist_vector stdout ----
+
+=== aes128_nist_vector ===
+  input  : 3243f6a8885a308d313198a2e0370734
+  output : 3925841d02dc09fbdc118597196a0b32
+  expect : 3925841d02dc09fbdc118597196a0b32
+
+---- milenage::tests::compute_opc_test_set_1 stdout ----
+
+=== compute_opc_test_set_1 ===
+  OPc : cd63cb71954a9f4e48a5994e37a02baf
+
+---- milenage::tests::test_set_1 stdout ----
+
+=== Test Set 1 ===
+  AK    : aa689c648370
+  XRES  : a54211d5e3ba50bf
+  CK    : b40ba9a3c58b2a05bbf0d987b21bf8cb
+  IK    : f769bcd751044604127672711c6d3441
+  MAC-A : 4a9ffac354dfafb3
+
+---- milenage::tests::test_set_1_autn_construction stdout ----
+
+=== test_set_1_autn_construction ===
+  AUTN : 55f328b43577b9b94a9ffac354dfafb3
+  XRES : a54211d5e3ba50bf
+  CK   : b40ba9a3c58b2a05bbf0d987b21bf8cb
+  IK   : f769bcd751044604127672711c6d3441
+
+---- milenage::tests::test_set_2 stdout ----
+
+=== Test Set 2 ===
+  AK    : b35debc06189
+  XRES  : 5d3110ac0aa2b01a
+  CK    : c83089bb006f814cf0a531bc65b341e2
+  IK    : 26af1069ebbe0743046db5758a7ede18
+  MAC-A : 9d9569313688a508
+
+---- milenage::tests::test_set_3 stdout ----
+
+=== Test Set 3 ===
+  AK    : 33484dc2136b
+  XRES  : 8011c48c0c214ed2
+  CK    : 5dbdbb2954e8f3cde665b046179a5098
+  IK    : 59a92d3b476a0443487055cf88b2307b
+  MAC-A : b01a6411575ca5c6
+
+---- milenage::tests::verify_res_accepts_matching stdout ----
+
+=== verify_res_accepts_matching ===  input: a54211d5e3ba50bf
+
+---- milenage::tests::verify_res_rejects_off_by_one stdout ----
+
+=== verify_res_rejects_off_by_one ===  xres: 0102030405060708  res: 01020304050607ff
+
+---- milenage::tests::verify_res_rejects_wrong stdout ----
+
+=== verify_res_rejects_wrong ===  xres: a54211d5e3ba50bf  res: 0000000000000000
+
+
+successes:
+    keys::tests::auth_key_from_hex_rejects_short
+    keys::tests::auth_key_from_hex_roundtrip
+    keys::tests::sqn_increment_wraps
+    keys::tests::sqn_round_trip
+    milenage::tests::aes128_nist_vector
+    milenage::tests::compute_opc_test_set_1
+    milenage::tests::test_set_1
+    milenage::tests::test_set_1_autn_construction
+    milenage::tests::test_set_2
+    milenage::tests::test_set_3
+    milenage::tests::verify_res_accepts_matching
+    milenage::tests::verify_res_rejects_off_by_one
+    milenage::tests::verify_res_rejects_wrong
+
+test result: ok. 13 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midn_auth
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
