@@ -1,9 +1,18 @@
 // crates/midn-userplane/src/ebpf/mod.rs
-//! eBPF subsystem — Linux only.
+//! eBPF subsystem — XDP program loader and BPF map management.
 //!
-//! Loads and manages the XDP program from midn-userplane-ebpf.
-//! The compiled BPF object is embedded at build time via include_bytes!.
+//! `loader::load_xdp` and `loader::BpfHandle` are defined on all platforms.
+//! On non-Linux, `load_xdp` immediately returns an error and `BpfHandle` is
+//! a zero-sized unit struct that cannot be constructed. Map methods (`insert_teid`,
+//! `remove_teid`) are only compiled on Linux.
 //!
-//! This module is only compiled when `target_os = "linux"`.
+//! ## Phase 3.1 activation
+//!
+//! 1. `cargo install bpf-linker`
+//! 2. Uncomment `aya-build` in `Cargo.toml` `[build-dependencies]`
+//! 3. Uncomment `aya_build::build_ebpf_programs` in `build.rs`
+//! 4. Uncomment `BPF_OBJECT` + the body of `load_xdp` in `loader.rs`
+//! 5. Wire `load_xdp(iface)` into the UPF startup path and pass the returned
+//!    `BpfHandle` to `SessionManager::set_bpf_handle`
 
 pub mod loader;
