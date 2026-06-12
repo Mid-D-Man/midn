@@ -9,6 +9,8 @@
 #     --midn-core               — test midn-core only
 #     --midn-userplane          — test midn-userplane only
 #     --midn-all                — test all crates
+#   Auto-detection: changed files under crates/midn-*/ trigger the matching crate.
+#   Workspace-root changes (Cargo.toml, rust-toolchain.toml) trigger all crates.
 
 name: midn-core — Tests
 
@@ -35,35 +37,74 @@ jobs:
       run_userplane: ${{ steps.decide.outputs.run_userplane }}
       run_any:       ${{ steps.decide.outputs.run_any }}
     steps:
+      - name: Checkout (for path-based change detection)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history — required so HEAD~1 always exists
+
       - name: Decide which crates to run
         id: decide
         run: |
-          DISPATCH=false
           AUTH=false
           PROTO=false
           CORE=false
           UP=false
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            DISPATCH=true
             AUTH=true; PROTO=true; CORE=true; UP=true
+
           else
+            # ── 1. Commit-message / PR-title tokens (explicit override) ────
             MSG="${{ github.event.head_commit.message }}${{ github.event.pull_request.title }}"
-            echo "$MSG" | grep -qiE '\-\-midn-all\b'       && AUTH=true && PROTO=true && CORE=true && UP=true || true
+            echo "$MSG" | grep -qiE '\-\-midn-all\b'       && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
             echo "$MSG" | grep -qiE '\-\-midn-auth\b'      && AUTH=true  || true
             echo "$MSG" | grep -qiE '\-\-midn-proto\b'     && PROTO=true || true
             echo "$MSG" | grep -qiE '\-\-midn-core\b'      && CORE=true  || true
             echo "$MSG" | grep -qiE '\-\-midn-userplane\b' && UP=true    || true
+
+            # ── 2. Path-based auto-detection ──────────────────────────────
+            # push:  diff parent..HEAD  (fetch-depth: 0 guarantees HEAD~1 exists)
+            # PR:    diff base..HEAD    (base sha from event payload)
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              CHANGED=$(git diff --name-only \
+                "${{ github.event.pull_request.base.sha }}" HEAD 2>/dev/null || true)
+            else
+              CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || true)
+            fi
+
+            if [ -n "$CHANGED" ]; then
+              echo "--- changed files ---"
+              echo "$CHANGED"
+              echo "---------------------"
+
+              # Each crate: match its directory prefix
+              echo "$CHANGED" | grep -qE '^crates/midn-auth/'              && AUTH=true  || true
+              echo "$CHANGED" | grep -qE '^crates/midn-proto/'             && PROTO=true || true
+              echo "$CHANGED" | grep -qE '^crates/midn-core/'              && CORE=true  || true
+              # midn-userplane but NOT midn-userplane-ebpf (ebpf needs nightly+bpf-linker)
+              # '^crates/midn-userplane[^-]' matches midn-userplane/ but not midn-userplane-ebpf/
+              echo "$CHANGED" | grep -qE '^crates/midn-userplane[^-]'      && UP=true    || true
+
+              # Top-level bench files
+              echo "$CHANGED" | grep -qE '^benches/auth_bench'             && AUTH=true  || true
+              echo "$CHANGED" | grep -qE '^benches/proto_bench'            && PROTO=true || true
+
+              # Workspace-root changes: run everything
+              echo "$CHANGED" | grep -qE \
+                '^Cargo\.toml$|^rust-toolchain\.toml$|^\.github/workflows/midn-test\.yml$' \
+                && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
+            fi
           fi
 
           ANY=false
-          [ "$AUTH" = "true" ] || [ "$PROTO" = "true" ] || [ "$CORE" = "true" ] || [ "$UP" = "true" ] && ANY=true || true
+          [ "$AUTH" = "true" ] || [ "$PROTO" = "true" ] || \
+          [ "$CORE" = "true" ] || [ "$UP"   = "true" ]  && ANY=true || true
 
-          echo "run_auth=$AUTH"      >> $GITHUB_OUTPUT
-          echo "run_proto=$PROTO"    >> $GITHUB_OUTPUT
-          echo "run_core=$CORE"      >> $GITHUB_OUTPUT
-          echo "run_userplane=$UP"   >> $GITHUB_OUTPUT
-          echo "run_any=$ANY"        >> $GITHUB_OUTPUT
+          echo "run_auth=$AUTH"       >> $GITHUB_OUTPUT
+          echo "run_proto=$PROTO"     >> $GITHUB_OUTPUT
+          echo "run_core=$CORE"       >> $GITHUB_OUTPUT
+          echo "run_userplane=$UP"    >> $GITHUB_OUTPUT
+          echo "run_any=$ANY"         >> $GITHUB_OUTPUT
 
           echo "Auth:$AUTH  Proto:$PROTO  Core:$CORE  Userplane:$UP  Any:$ANY"
 
@@ -112,6 +153,11 @@ jobs:
         if: needs.parse-trigger.outputs.run_core == 'true'
         continue-on-error: true
         run: cargo clippy -p midn-core -- -D warnings
+
+      - name: Clippy — midn-userplane
+        if: needs.parse-trigger.outputs.run_userplane == 'true'
+        continue-on-error: true
+        run: cargo clippy -p midn-userplane -- -D warnings
 
       # ── Build ─────────────────────────────────────────────────────────────────
       - name: Build midn-auth
@@ -488,6 +534,7 @@ jobs:
           echo "  midn-userplane: ${{ needs.parse-trigger.outputs.run_userplane }}"
           echo ""
           if [ "${{ needs.parse-trigger.outputs.run_any }}" != "true" ]; then
-            echo "Not triggered. Add one of these to your commit message:"
+            echo "Not triggered. Either use a commit token:"
             echo "  --midn-auth  --midn-proto  --midn-core  --midn-userplane  --midn-all"
+            echo "Or touch any source file under crates/midn-*/ (auto-detected)."
           fi
