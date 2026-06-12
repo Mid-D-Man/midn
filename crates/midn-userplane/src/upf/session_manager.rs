@@ -300,8 +300,10 @@ mod tests {
         assert_eq!(s.imsi,      234_15_9876543210);
         assert_eq!(s.dl_teid,   0, "dl_teid is placeholder until ICSRSP");
 
-        let rt = m.routing_arc().lock().unwrap();
-        let e  = rt.lookup_ul(ul_teid).unwrap();
+        // FIX E0716: bind the Arc before locking so the temporary outlives the guard
+        let arc = m.routing_arc();
+        let rt  = arc.lock().unwrap();
+        let e   = rt.lookup_ul(ul_teid).unwrap();
         assert_eq!(e.ue_ip,  [10, 0, 1, 5]);
         assert_eq!(e.dl_teid, 0);
     }
@@ -335,13 +337,14 @@ mod tests {
         let s = m.get_session(ul_teid).unwrap();
         assert_eq!(s.dl_teid, real_dl_teid);
 
-        // UL routing map updated
-        let rt = m.routing_arc().lock().unwrap();
+        // FIX E0716: bind the Arc before locking
+        let arc      = m.routing_arc();
+        let rt       = arc.lock().unwrap();
         let ul_entry = rt.lookup_ul(ul_teid).unwrap();
         assert_eq!(ul_entry.dl_teid,  real_dl_teid);
         assert_eq!(ul_entry.enb_addr, real_enb_addr);
 
-        // DL routing map (by UE IP) also updated
+        // DL routing map (by UE IP) also updated — rt is still in scope
         let dl_entry = rt.lookup_dl(&[10, 0, 0, 3]).unwrap();
         assert_eq!(dl_entry.dl_teid,  real_dl_teid);
         assert_eq!(dl_entry.enb_addr, real_enb_addr);
@@ -355,8 +358,10 @@ mod tests {
 
         m.update_bearer_info(ul_teid, 0x1234_5678, [172, 16, 0, 1]);
 
-        let rt = m.routing_arc().lock().unwrap();
-        let e  = rt.lookup_ul(ul_teid).unwrap();
+        // FIX E0716: bind the Arc before locking
+        let arc = m.routing_arc();
+        let rt  = arc.lock().unwrap();
+        let e   = rt.lookup_ul(ul_teid).unwrap();
         assert_eq!(e.ue_ip, [10, 1, 2, 3], "ue_ip must not change");
         assert_eq!(e.qci,   5,             "qci must not change");
     }
@@ -422,16 +427,23 @@ mod tests {
         let ul_teid = 0x0003_0000_u32;
         m.create_session_with_teid(ul_teid, 0, 1, [10, 1, 2, 3], [0; 4], 9);
         m.update_bearer_info(ul_teid, 0xAAAA_0001, [192, 168, 0, 1]);
+
+        // FIX E0716: bind the Arc before locking (first block)
         {
-            let rt = m.routing_arc().lock().unwrap();
+            let arc = m.routing_arc();
+            let rt  = arc.lock().unwrap();
             assert!(rt.lookup_ul(ul_teid).is_some());
             assert!(rt.lookup_dl(&[10, 1, 2, 3]).is_some());
         }
+
         m.remove_session(ul_teid);
+
+        // FIX E0716: bind the Arc before locking (second block)
         {
-            let rt = m.routing_arc().lock().unwrap();
+            let arc = m.routing_arc();
+            let rt  = arc.lock().unwrap();
             assert!(rt.lookup_ul(ul_teid).is_none());
             assert!(rt.lookup_dl(&[10, 1, 2, 3]).is_none());
         }
     }
-    }
+        }
