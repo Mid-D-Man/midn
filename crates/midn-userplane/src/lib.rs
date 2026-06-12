@@ -6,7 +6,7 @@
 //!   - Decapsulate inner IP packets and route to PDN (internet)
 //!   - Encapsulate DL packets and send to eNodeB via GTP-U
 //!   - Enforce per-subscriber QoS (Phase 3)
-//!   - XDP/eBPF fast path for kernel-level packet steering (Phase 3)
+//!   - XDP/eBPF fast path for kernel-level packet steering (Phase 3.1)
 //!
 //! ## Data plane flow
 //!
@@ -29,12 +29,16 @@
 //!   ├── mpsc::Sender<UlPacket>   ← emits decapsulated UL packets
 //!   └── mpsc::Receiver<DlPacket> ← receives DL packets to encapsulate
 //!
-//! TunnelManager  ← lower-level building block (kept for bench suite)
+//! TunnelManager  ← lower-level building block (bench suite)
+//!
+//! ebpf::loader::BpfHandle  ← Phase 3.1: kernel TEID_TO_ROUTE map management
 //! ```
 
 pub mod upf;
 
-#[cfg(target_os = "linux")]
+// ebpf is not Linux-gated here; loader.rs handles platform differences
+// internally with #[cfg] blocks. load_xdp and BpfHandle exist on all
+// platforms — on non-Linux, load_xdp returns an error immediately.
 pub mod ebpf;
 
 pub use upf::forwarder::{DlPacket, GtpForwarder, UlPacket, GTP_PORT};
@@ -42,3 +46,5 @@ pub use upf::routing::RoutingTable;
 pub use upf::session::UserPlaneSession;
 pub use upf::session_manager::SessionManager;
 pub use upf::tunnel::TunnelManager;
+pub use upf::xdp_types::XdpRouteEntry;
+// load_xdp and BpfHandle reachable as midn_userplane::ebpf::loader::{load_xdp, BpfHandle}
