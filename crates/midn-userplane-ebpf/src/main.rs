@@ -16,10 +16,23 @@
 //!   XDP_TX      — retransmit packet out the same NIC (with modified headers)
 //!   XDP_REDIRECT — send to another NIC or CPU queue
 //!
-//! ## Current behavior (Phase 3 stub)
+//! ## Current behaviour (Phase 3.0)
 //!
-//! All packets → XDP_PASS (kernel handles everything).
-//! Phase 3 implements the GTP-U TEID lookup and header rewrite.
+//! Steps 1–6 of the GTP-U decision tree are active:
+//!   ETH → IPv4 → UDP:2152 → GTP-U header → G-PDU check → TEID map lookup.
+//! On a TEID hit, the packet still returns XDP_PASS so the userspace
+//! `GtpForwarder` handles it. Phase 3.1 activates XDP_TX with header rewrite.
+//!
+//! ## Build (requires nightly + bpf-linker)
+//!
+//! ```bash
+//! rustup toolchain install nightly --component rust-src
+//! cargo install bpf-linker
+//! cargo +nightly build -p midn-userplane-ebpf \
+//!   --release \
+//!   --target bpfel-unknown-none \
+//!   -Z build-std=core
+//! ```
 
 #![no_std]
 #![no_main]
@@ -28,26 +41,25 @@ use aya_ebpf::{macros::xdp, programs::XdpContext};
 use aya_ebpf::bindings::xdp_action;
 
 mod gtp_xdp;
+mod maps;
 
 /// XDP hook — called for every incoming packet at NIC driver speed.
 ///
-/// Returns an xdp_action constant to tell the kernel what to do.
-/// Must never panic — the verifier ensures all paths return a valid action.
+/// Delegates to `gtp_xdp::process`. On any parse error the packet is
+/// passed to the kernel — a parse failure never silently drops traffic.
 #[xdp]
 pub fn midn_gtp_xdp(ctx: XdpContext) -> u32 {
     match gtp_xdp::process(ctx) {
         Ok(action) => action,
-        // On any parse error, pass to kernel — never drop silently.
         Err(_)     => xdp_action::XDP_PASS,
     }
 }
 
-/// Panic handler — required for no_std binaries.
+/// Panic handler — required for `#![no_std]` binaries.
 ///
-/// In BPF context this is unreachable if the verifier accepted the program.
-/// The verifier checks all code paths; panics produce unverifiable code.
+/// Unreachable in practice: the BPF verifier rejects programs where any
+/// code path could panic before loading them into the kernel.
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
-    // Safety: The BPF verifier ensures this is unreachable.
     loop {}
 }
