@@ -1,287 +1,269 @@
 // crates/midn-core/src/mme/attach.rs
-//! LTE Attach procedure — 3GPP TS 23.401 Section 5.3.2
+//! EPS-AKA attach procedure — per-step handlers.
+//!
+//! Called by `Mme::process_s1ap`; each function returns
+//! `(Vec<S1apMessage>, Vec<UpfEvent>)` to keep state_machine.rs flat.
+//!
+//! ## Step mapping
+//!
+//! | Step | Trigger NAS/S1AP PDU        | Handler                   |
+//! |------|-----------------------------|---------------------------|
+//! | 1    | InitialUEMessage(AttachReq) | `start_attach`            |
+//! | 2    | UplinkNas(AuthResponse)     | `handle_auth_response`    |
+//! | 3    | UplinkNas(SecModeComplete)  | `handle_sec_mode_complete`|
+//! | 8    | UplinkNas(AttachComplete)   | `handle_attach_complete`  |
 
-use bytes::Bytes;
-use midn_auth::milenage::MilenageContext;
-use midn_proto::nas::codec::{
-    decode_nas, encode_attach_accept, encode_auth_request,
-    encode_sec_mode_cmd, NasPdu,
+use midn_auth::MilenageContext;
+use midn_proto::nas::{
+    decode_nas_pdu, encode_attach_accept, encode_authentication_request,
+    encode_security_mode_command, NasPdu,
 };
-use midn_proto::nas::ie::{NasEeaAlgorithm, NasEiaAlgorithm};
+use midn_proto::s1ap::{
+    DownlinkNasTransport, ErabToSetup, InitialContextSetupRequest, S1apMessage,
+};
 
-use crate::ecs::components::{
-    AuthFailReason, AuthState, ImsiComponent, SecurityContext, SessionState, TunnelComponent,
-};
-use crate::ecs::world::{CoreWorld, EntityId};
-use crate::ecs::registry::ImsiRegistry;
 use crate::hss::Hss;
+use crate::mme::state_machine::{
+    AttachContext, ImsiRegistry, SessionState, TunnelComponent, UpfEvent, World,
+};
 
-/// Tracks the state of a single UE's attach procedure.
-pub struct AttachContext {
-    pub entity_id:      EntityId,
-    pub enb_ue_s1ap_id: u32,
-    pub mme_ue_s1ap_id: u32,
-    pub imsi:           u64,
-    pub state:          AttachState,
-    pub ue_capability:  Vec<u8>,
-    /// Uplink TEID pre-allocated by the MME for this session's UPF route.
-    /// Set by `handle_security_mode_complete`. Used to build the ICSR
-    /// and to emit `UpfEvent::UpdateBearer` when the ICSRSP arrives.
-    pub ul_teid:        Option<u32>,
+// ── AMF constant ──────────────────────────────────────────────────────────────
+
+/// Authentication Management Field: bit 0 = 1 signals UMTS AKA (TS 33.102).
+const AMF: [u8; 2] = [0x80, 0x00];
+
+// ── Error type ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, thiserror::Error)]
+pub enum AttachError {
+    #[error("unknown subscriber IMSI {0}")]
+    UnknownSubscriber(u64),
+    #[error("no attach context for entity {0}")]
+    NoContext(u32),
+    #[error("RES verification failed")]
+    ResVerifyFailed,
+    #[error("NAS decode failed")]
+    NasDecode,
+    #[error("IMSI not registered")]
+    ImsiNotFound,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AttachState {
-    ChallengeIssued,
-    SecurityPending,
-    AcceptPending,
-    Attached,
-    Failed(AttachFailReason),
-}
+// ── Step 1: AttachRequest ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AttachFailReason {
-    ImsiNotProvisioned,
-    AuthResponseMismatch,
-    NasDecodeError,
-    InternalError,
-}
-
-/// NAS PDU plus done flag — returned by attach step handlers.
-pub struct AttachStep {
-    pub nas_pdu: Bytes,
-    pub done:    bool,
-}
-
-// ── Attach Request ────────────────────────────────────────────────────────────
-
-pub fn handle_attach_request(
-    nas_pdu:        &Bytes,
-    enb_ue_s1ap_id: u32,
-    mme_ue_s1ap_id: u32,
-    world:          &mut CoreWorld,
+/// Process an `InitialUEMessage` whose NAS PDU is an `AttachRequest`.
+///
+/// Spawns an ECS entity, fetches a Milenage auth vector from the HSS
+/// (which generates RAND internally), constructs AUTN, stores the context,
+/// and returns a `DownlinkNasTransport` carrying the `AuthenticationRequest`.
+pub fn start_attach(
+    world:          &mut World,
     registry:       &mut ImsiRegistry,
     hss:            &mut Hss,
-) -> Result<(AttachContext, AttachStep), AttachFailReason> {
-    let decoded = decode_nas(nas_pdu).map_err(|e| {
-        tracing::warn!("NAS decode error in AttachRequest: {e}");
-        AttachFailReason::NasDecodeError
-    })?;
+    enb_ue_s1ap_id: u32,
+    nas_pdu:        &[u8],
+) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+    // Decode AttachRequest from the NAS PDU.
+    let pdu = match decode_nas_pdu(nas_pdu) {
+        Some(NasPdu::AttachRequest { imsi, ue_ip }) => (imsi, ue_ip),
+        _ => {
+            tracing::warn!("start_attach: NAS decode failed or wrong PDU type");
+            return (vec![], vec![]);
+        }
+    };
+    let (imsi, ue_ip) = pdu;
 
-    let ar = match decoded {
-        NasPdu::AttachRequest(ar) => ar,
-        _ => return Err(AttachFailReason::NasDecodeError),
+    // Fixed: was hss.get_auth_vector(imsi) — renamed to generate_auth_vector.
+    // generate_auth_vector produces RAND via OS entropy internally and returns
+    // it in HssAuthInfo.rand, so we no longer need to generate it here.
+    let auth_info = match hss.generate_auth_vector(imsi) {
+        Some(info) => info,
+        None => {
+            tracing::warn!(imsi, "start_attach: unknown subscriber");
+            return (vec![], vec![]);
+        }
     };
 
-    let imsi = ar.imsi.ok_or_else(|| {
-        tracing::warn!("AttachRequest without IMSI — GUTI re-attach not yet supported");
-        AttachFailReason::InternalError
-    })?;
+    // AUTN = (SQN ⊕ AK) ∥ AMF ∥ MAC-A  (16 bytes).
+    // sqn_used is [u8; 6] in the new HssAuthInfo (was Sqn newtype previously).
+    let autn = auth_info.vector.autn(&auth_info.sqn_used, &AMF);
 
-    tracing::info!(imsi, "Attach Request received");
+    // Spawn ECS entity and record IMSI → entity mapping.
+    let entity = world.spawn();
+    registry.register(imsi, entity);
 
-    let auth_info = hss.get_auth_vector(imsi).ok_or_else(|| {
-        tracing::warn!(imsi, "IMSI not provisioned in HSS");
-        AttachFailReason::ImsiNotProvisioned
-    })?;
+    // Store per-UE attach state as an ECS component.
+    world.insert_attach_context(entity, AttachContext {
+        imsi,
+        enb_ue_s1ap_id,
+        mme_ue_s1ap_id: entity,
+        rand:     auth_info.rand,       // new field — directly available
+        xres:     auth_info.vector.res,
+        ck:       auth_info.vector.ck,
+        ik:       auth_info.vector.ik,
+        sqn_used: auth_info.sqn_used,   // [u8;6] — no .0 dereference needed
+        ue_ip:    ue_ip.unwrap_or([0; 4]),
+        ul_teid:  None,
+    });
 
-    let entity_id = world.spawn();
-    world.imsi.insert(entity_id, ImsiComponent(imsi));
-    world.auth.insert(entity_id, AuthState::ChallengeIssued);
+    // Encode NAS AuthenticationRequest PDU.
+    let nas = encode_authentication_request(&auth_info.rand, &autn);
 
-    let mut sec_ctx = SecurityContext::new_empty();
-    sec_ctx.pending_rand.copy_from_slice(&auth_info.vector.rand.0);
-    sec_ctx.pending_xres.copy_from_slice(&auth_info.vector.xres);
-    sec_ctx.ck.copy_from_slice(&auth_info.vector.ck);
-    sec_ctx.ik.copy_from_slice(&auth_info.vector.ik);
-    world.security.insert(entity_id, sec_ctx);
+    let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
+        enb_ue_s1ap_id,
+        mme_ue_s1ap_id: entity,
+        nas_pdu: nas,
+    });
+    (vec![dl], vec![])
+}
 
-    if let Some(old_entity) = registry.register(imsi, entity_id) {
-        tracing::warn!(imsi, old_id = ?old_entity, new_id = ?entity_id,
-            "IMSI already registered — possible re-attach without detach");
-        world.despawn(old_entity);
+// ── Step 2: AuthenticationResponse ───────────────────────────────────────────
+
+/// Verify the UE's RES against the stored XRES and issue SecurityModeCommand.
+pub fn handle_auth_response(
+    world:          &mut World,
+    registry:       &ImsiRegistry,
+    enb_ue_s1ap_id: u32,
+    mme_ue_s1ap_id: u32,
+    nas_pdu:        &[u8],
+) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+    // Decode the NAS PDU.
+    let res = match decode_nas_pdu(nas_pdu) {
+        Some(NasPdu::AuthenticationResponse { res }) => res,
+        _ => {
+            tracing::warn!("handle_auth_response: bad NAS PDU");
+            return (vec![], vec![]);
+        }
+    };
+
+    // Look up the attach context.
+    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {
+        Some(c) => c,
+        None => {
+            tracing::warn!(mme_ue_s1ap_id, "handle_auth_response: no context");
+            return (vec![], vec![]);
+        }
+    };
+
+    // Constant-time RES verification (f2 output vs UE response).
+    let res_arr: [u8; 8] = match res.as_slice().try_into() {
+        Ok(a) => a,
+        Err(_) => {
+            tracing::warn!("handle_auth_response: RES wrong length");
+            return (vec![], vec![]);
+        }
+    };
+    if !MilenageContext::verify_res(&ctx.xres, &res_arr) {
+        tracing::warn!(mme_ue_s1ap_id, "handle_auth_response: RES mismatch");
+        return (vec![], vec![]);
     }
 
-    let auth_req_pdu = encode_auth_request(
-        0x07,
-        &auth_info.vector.rand.0,
-        &auth_info.vector.autn,
-    );
-
-    tracing::debug!(imsi, entity_id = ?entity_id, "Auth challenge issued");
-
-    let ctx = AttachContext {
-        entity_id,
+    // RES verified — issue SecurityModeCommand (EEA2 + EIA2).
+    let nas = encode_security_mode_command(ctx.ck, ctx.ik);
+    let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
         enb_ue_s1ap_id,
         mme_ue_s1ap_id,
-        imsi,
-        state:         AttachState::ChallengeIssued,
-        ue_capability: ar.ue_network_cap,
-        ul_teid:       None,
-    };
-    Ok((ctx, AttachStep { nas_pdu: auth_req_pdu, done: false }))
+        nas_pdu: nas,
+    });
+    (vec![dl], vec![])
 }
 
-// ── Authentication Response ───────────────────────────────────────────────────
+// ── Step 3: SecurityModeComplete ─────────────────────────────────────────────
 
-pub fn handle_auth_response(
-    ctx:     &mut AttachContext,
-    nas_pdu: &Bytes,
-    world:   &mut CoreWorld,
-) -> Result<AttachStep, AttachFailReason> {
-    let decoded = decode_nas(nas_pdu).map_err(|_| AttachFailReason::NasDecodeError)?;
-    let ar = match decoded {
-        NasPdu::AuthenticationResponse(ar) => ar,
-        _ => return Err(AttachFailReason::NasDecodeError),
-    };
-
-    let sec_ctx = world.security.get_mut(&ctx.entity_id)
-        .ok_or(AttachFailReason::InternalError)?;
-    let xres     = sec_ctx.pending_xres;
-    let verified = MilenageContext::verify_res(&xres, &ar.res);
-    sec_ctx.clear_pending();
-
-    if !verified {
-        tracing::warn!(imsi = ctx.imsi, "Authentication failed: RES mismatch");
-        world.set_auth_state(ctx.entity_id, AuthState::Failed(AuthFailReason::ResMismatch));
-        ctx.state = AttachState::Failed(AttachFailReason::AuthResponseMismatch);
-        return Err(AttachFailReason::AuthResponseMismatch);
-    }
-
-    world.set_auth_state(ctx.entity_id, AuthState::Authenticated);
-    ctx.state = AttachState::SecurityPending;
-    tracing::info!(imsi = ctx.imsi, entity_id = ?ctx.entity_id, "UE authenticated");
-
-    let sec_cmd_pdu = encode_sec_mode_cmd(
-        NasEeaAlgorithm::Eea2,
-        NasEiaAlgorithm::Eia2,
-        0x07,
-        &ctx.ue_capability,
-    );
-
-    let sec_ctx = world.security.get_mut(&ctx.entity_id)
-        .ok_or(AttachFailReason::InternalError)?;
-    sec_ctx.cipher_alg    = 2;
-    sec_ctx.integrity_alg = 2;
-
-    Ok(AttachStep { nas_pdu: sec_cmd_pdu, done: false })
-}
-
-// ── Security Mode Complete ────────────────────────────────────────────────────
-
-/// Process Security Mode Complete.
+/// On SecurityModeComplete, allocate bearer resources and send AttachAccept.
 ///
-/// Allocates an IP address, creates the PDN session, creates the GTP-U
-/// `TunnelComponent` using the pre-allocated `ul_teid`, and builds the
-/// `AttachAccept` NAS PDU.
-///
-/// The caller (state machine) decides whether to send the AttachAccept
-/// directly via DownlinkNasTransport (Phase 2) or to embed it in an
-/// InitialContextSetupRequest (Phase 3).
+/// Phase 2: wraps AttachAccept in `DownlinkNasTransport`.
+/// Phase 3: wraps AttachAccept in `InitialContextSetupRequest` with embedded
+///          NAS PDU, and emits `UpfEvent::CreateSession`.
 pub fn handle_security_mode_complete(
-    ctx:      &mut AttachContext,
-    nas_pdu:  &Bytes,
-    world:    &mut CoreWorld,
-    ip_pool:  &mut IpPool,
-    ul_teid:  u32,
-) -> Result<AttachStep, AttachFailReason> {
-    let decoded = decode_nas(nas_pdu).map_err(|_| AttachFailReason::NasDecodeError)?;
-    if !matches!(decoded, NasPdu::SecurityModeComplete) {
-        return Err(AttachFailReason::NasDecodeError);
+    world:           &mut World,
+    enb_ue_s1ap_id:  u32,
+    mme_ue_s1ap_id:  u32,
+    phase3_upf:      Option<[u8; 4]>,
+    teid_counter:    &mut u32,
+) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {
+        Some(c) => c,
+        None => {
+            tracing::warn!(mme_ue_s1ap_id, "handle_sec_mode_complete: no context");
+            return (vec![], vec![]);
+        }
+    };
+    let imsi   = ctx.imsi;
+    let ue_ip  = ctx.ue_ip;
+
+    // Encode AttachAccept NAS PDU (EPS bearer 5, default PDN address).
+    let attach_accept_nas = encode_attach_accept(5, &ue_ip);
+
+    if let Some(_upf_addr) = phase3_upf {
+        // Phase 3: allocate UL TEID, create tunnel component, emit CreateSession.
+        let ul_teid = *teid_counter;
+        *teid_counter = teid_counter.wrapping_add(1);
+
+        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
+            ul_teid: Some(ul_teid),
+            ..ctx
+        });
+        world.insert_session_state(mme_ue_s1ap_id, SessionState { imsi, ul_teid });
+        world.insert_tunnel(mme_ue_s1ap_id, TunnelComponent {
+            ul_teid,
+            dl_teid: 0,           // placeholder; filled by handle_icsrsp
+            enb_addr: [0; 4],     // placeholder; filled by handle_icsrsp
+        });
+
+        // Build InitialContextSetupRequest with AttachAccept embedded as nas_pdu.
+        let icsr = S1apMessage::InitialContextSetupRequest(InitialContextSetupRequest {
+            enb_ue_s1ap_id,
+            mme_ue_s1ap_id,
+            e_rabs: vec![ErabToSetup {
+                erab_id:               5,
+                qci:                   9,
+                gtp_teid:              ul_teid.to_be_bytes(),
+                transport_layer_addr:  _upf_addr,
+            }],
+            nas_pdu: Some(attach_accept_nas),
+            ue_ambr: (50_000_000, 50_000_000),
+            security_key: derive_kasme(&ctx.ck, &ctx.ik),
+        });
+
+        let evt = UpfEvent::CreateSession {
+            ul_teid,
+            entity_id: mme_ue_s1ap_id,
+            imsi,
+            ue_ip,
+            enb_addr: [0; 4],
+            qci: 9,
+        };
+        (vec![icsr], vec![evt])
+
+    } else {
+        // Phase 2: wrap AttachAccept in DownlinkNasTransport.
+        let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
+            enb_ue_s1ap_id,
+            mme_ue_s1ap_id,
+            nas_pdu: attach_accept_nas,
+        });
+        (vec![dl], vec![])
     }
-
-    ctx.state   = AttachState::AcceptPending;
-    ctx.ul_teid = Some(ul_teid);
-
-    let ip = ip_pool.allocate(ctx.entity_id)
-        .ok_or(AttachFailReason::InternalError)?;
-
-    world.session.insert(ctx.entity_id, SessionState::new(ip, b"internet", 5));
-
-    // TunnelComponent: ul_teid is pre-allocated; dl_teid and enb_addr are
-    // placeholders until InitialContextSetupResponse arrives from eNodeB.
-    world.tunnel.insert(ctx.entity_id, TunnelComponent::new(0, ul_teid, [0, 0, 0, 0]));
-
-    tracing::info!(imsi = ctx.imsi, ip = ?ip, ul_teid, "Session created");
-
-    let attach_accept_pdu = encode_attach_accept(
-        0x01, 0x54, &[], Some(ip), Some("internet"),
-    );
-
-    Ok(AttachStep { nas_pdu: attach_accept_pdu, done: false })
 }
 
-// ── Initial Context Setup Response ───────────────────────────────────────────
+// ── Step 8: AttachComplete ────────────────────────────────────────────────────
 
-/// Process the real DL TEID and eNodeB address from an
-/// `InitialContextSetupResponse`.
-///
-/// Updates the `TunnelComponent` in the ECS world. The state machine then
-/// emits a `UpfEvent::UpdateBearer` so the user-plane routing table can be
-/// updated to match.
-pub fn handle_initial_context_setup_response(
-    ctx:      &AttachContext,
-    dl_teid:  u32,
-    enb_addr: [u8; 4],
-    world:    &mut CoreWorld,
-) -> Result<(), AttachFailReason> {
-    let tunnel = world.tunnel.get_mut(&ctx.entity_id)
-        .ok_or(AttachFailReason::InternalError)?;
-    tunnel.dl_teid  = dl_teid;
-    tunnel.enb_addr = enb_addr;
-    tunnel.enb_port = TunnelComponent::GTP_PORT;
-    tracing::info!(
-        imsi     = ctx.imsi,
-        dl_teid,
-        enb_addr = ?enb_addr,
-        "DL TEID and eNodeB address set from ICSRSP"
-    );
-    Ok(())
-}
-
-// ── Attach Complete ───────────────────────────────────────────────────────────
-
+/// UE confirms attach — subscriber is now online. No response required.
 pub fn handle_attach_complete(
-    ctx:     &mut AttachContext,
-    nas_pdu: &Bytes,
-) -> Result<(), AttachFailReason> {
-    let decoded = decode_nas(nas_pdu).map_err(|_| AttachFailReason::NasDecodeError)?;
-    if !matches!(decoded, NasPdu::AttachComplete) {
-        return Err(AttachFailReason::NasDecodeError);
-    }
-    ctx.state = AttachState::Attached;
-    tracing::info!(imsi = ctx.imsi, entity_id = ?ctx.entity_id, "Attach Complete — subscriber online");
-    Ok(())
+    _world:          &mut World,
+    mme_ue_s1ap_id:  u32,
+) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+    tracing::info!(mme_ue_s1ap_id, "AttachComplete — subscriber online");
+    (vec![], vec![])
 }
 
-// ── IP Pool ───────────────────────────────────────────────────────────────────
+// ── Internal helpers ──────────────────────────────────────────────────────────
 
-/// Simple sequential IPv4 address pool. Phase 3: replace with IPAM.
-pub struct IpPool {
-    next:     u32,
-    capacity: u32,
-    assigned: std::collections::HashMap<EntityId, [u8; 4]>,
-}
-
-impl IpPool {
-    pub fn new(base_ip: [u8; 4], capacity: u32) -> Self {
-        let base = u32::from_be_bytes(base_ip);
-        Self { next: base, capacity, assigned: std::collections::HashMap::new() }
-    }
-
-    pub fn allocate(&mut self, entity: EntityId) -> Option<[u8; 4]> {
-        if self.assigned.len() >= self.capacity as usize { return None; }
-        let ip = self.next.to_be_bytes();
-        self.next = self.next.wrapping_add(1);
-        self.assigned.insert(entity, ip);
-        Some(ip)
-    }
-
-    pub fn release(&mut self, entity: EntityId) {
-        self.assigned.remove(&entity);
-    }
-}
-
-impl Default for IpPool {
-    fn default() -> Self { Self::new([10, 0, 1, 1], 65_534) }
-                               }
+/// Minimal KeNB / K_ASME derivation placeholder.
+/// Replace with TS 33.401 §A.2 KDF when hardening security.
+fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(ck);
+    key[16..].copy_from_slice(ik);
+    key
+        }
