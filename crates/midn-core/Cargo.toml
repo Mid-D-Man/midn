@@ -1,26 +1,16 @@
+# crates/midn-core/Cargo.toml
 [package]
 name    = "midn-core"
 version = "0.1.0"
-edition = "2024"
-
-[lib]
-name = "midn_core"
+edition = "2021"
 
 [dependencies]
 midn-auth  = { path = "../midn-auth" }
 midn-proto = { path = "../midn-proto" }
-zeroize    = { version = "1.8", features = ["derive"] }
-bytes      = "1.5"
-hex        = "0.4"
-tokio      = { version = "1", features = ["full"] }
-thiserror  = "1.0"
+rand       = "0.8"
+thiserror  = "1"
 tracing    = "0.1"
-# mid-math = { workspace = true }
+tokio      = { version = "1", features = ["rt", "sync", "macros"] }
 
 [dev-dependencies]
-criterion  = { version = "0.5", features = ["html_reports"] }
-tokio-test = "0.4"
-
-[[bench]]
-name    = "core_bench"
-harness = false
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
