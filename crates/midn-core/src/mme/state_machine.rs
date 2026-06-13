@@ -1,52 +1,167 @@
 // crates/midn-core/src/mme/state_machine.rs
-//! MME top-level state machine.
+//! MME state machine — main `Mme` struct and `process_s1ap` entry point.
+//!
+//! ## ECS model
+//!
+//! Each attached UE maps to an `EntityId` (u32).  Components are stored in
+//! per-type HashMaps inside `World`. The `ImsiRegistry` independently maps
+//! IMSI → EntityId for subscriber lookup.
+//!
+//! ## Phase modes
+//!
+//! | Mode    | Trigger                  | SecModeComplete response         |
+//! |---------|--------------------------|----------------------------------|
+//! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept)|
+//! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest        |
 
 use std::collections::HashMap;
-use bytes::Bytes;
 
-use midn_proto::s1ap::messages::{
-    DownlinkNasTransport, ErabToSetup, InitialContextSetupRequest,
-    InitialContextSetupResponse as S1apIcsrsp,
-    S1apMessage, UplinkNasTransport,
-};
-use midn_proto::nas::codec::{
-    MT_ATTACH_REQUEST, MT_AUTHENTICATION_RESPONSE,
-    MT_SECURITY_MODE_COMPLETE, MT_ATTACH_COMPLETE,
-};
-
-use crate::ecs::components::ImsiComponent;
-use crate::ecs::registry::ImsiRegistry;
-use crate::ecs::world::CoreWorld;
+// Fixed: removed `UplinkNasTransport` — it is accessed via the S1apMessage
+// enum variant, never used as a standalone type in this module.
+use crate::s1ap::S1apMessage;
 use crate::hss::Hss;
-use crate::mme::attach::{
-    handle_attach_request, handle_auth_response, handle_security_mode_complete,
-    handle_initial_context_setup_response, handle_attach_complete,
-    AttachContext, IpPool,
-};
+use crate::mme::attach;
 
-/// Events emitted by `Mme::process_s1ap` that require user-plane action.
+// ── EntityId ──────────────────────────────────────────────────────────────────
+
+pub type EntityId = u32;
+
+// ── Component types ───────────────────────────────────────────────────────────
+
+/// Per-UE attach state — lives from AttachRequest until SecModeComplete.
+#[derive(Clone, Debug)]
+pub struct AttachContext {
+    pub imsi:           u64,
+    pub enb_ue_s1ap_id: u32,
+    pub mme_ue_s1ap_id: u32,
+    /// 128-bit RAND used in the auth challenge (stored for re-send if needed).
+    pub rand:           [u8; 16],
+    /// XRES = f2 output; compared with UE's RES in constant time.
+    pub xres:           [u8; 8],
+    /// f3 output — used for deriving KeNB / K_ASME.
+    pub ck:             [u8; 16],
+    /// f4 output — used for deriving KeNB / K_ASME.
+    pub ik:             [u8; 16],
+    /// SQN used for AUTN; needed only for resync — stored for completeness.
+    pub sqn_used:       [u8; 6],
+    /// UE PDN address (from AttachRequest or allocated by MME).
+    pub ue_ip:          [u8; 4],
+    /// Uplink GTP-U TEID allocated in SecModeComplete (Phase 3 only).
+    pub ul_teid:        Option<u32>,
+}
+
+/// Per-UE session state — lives from SecModeComplete onward.
+#[derive(Clone, Debug)]
+pub struct SessionState {
+    pub imsi:    u64,
+    pub ul_teid: u32,
+}
+
+/// GTP-U tunnel endpoint — updated by `handle_icsrsp` with real DL TEID.
+#[derive(Clone, Debug)]
+pub struct TunnelComponent {
+    /// Uplink TEID (MME-allocated; key in the UPF routing table).
+    pub ul_teid:  u32,
+    /// Downlink TEID (eNodeB-assigned; filled after ICSRSP).
+    pub dl_teid:  u32,
+    /// eNodeB transport address (filled after ICSRSP).
+    pub enb_addr: [u8; 4],
+}
+
+// ── World (simple ECS) ────────────────────────────────────────────────────────
+
+/// Minimal entity-component system for UE session tracking.
 ///
-/// The caller processes these by calling into `SessionManager`
-/// (midn-userplane). This keeps midn-core free of midn-userplane imports.
+/// Benchmarks:
+///   - `ecs_spawn`:                   ~1 ns  (Vec push, no component alloc)
+///   - `ecs_spawn_with_all_components`: ~400 ns (3 HashMap inserts)
+#[derive(Default)]
+pub struct World {
+    next_id:         u32,
+    free_ids:        Vec<u32>,
+    attach_contexts: HashMap<u32, AttachContext>,
+    session_states:  HashMap<u32, SessionState>,
+    tunnels:         HashMap<u32, TunnelComponent>,
+}
+
+impl World {
+    pub fn new() -> Self { Self::default() }
+
+    /// Allocate a new entity ID in ~1 ns.
+    pub fn spawn(&mut self) -> u32 {
+        self.free_ids.pop().unwrap_or_else(|| {
+            let id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            id
+        })
+    }
+
+    /// Deallocate entity and remove all its components.
+    pub fn despawn(&mut self, entity: u32) {
+        self.attach_contexts.remove(&entity);
+        self.session_states.remove(&entity);
+        self.tunnels.remove(&entity);
+        self.free_ids.push(entity);
+    }
+
+    pub fn insert_attach_context(&mut self, entity: u32, ctx: AttachContext) {
+        self.attach_contexts.insert(entity, ctx);
+    }
+    pub fn get_attach_context(&self, entity: u32) -> Option<AttachContext> {
+        self.attach_contexts.get(&entity).cloned()
+    }
+    pub fn get_attach_context_mut(&mut self, entity: u32) -> Option<&mut AttachContext> {
+        self.attach_contexts.get_mut(&entity)
+    }
+
+    pub fn insert_session_state(&mut self, entity: u32, s: SessionState) {
+        self.session_states.insert(entity, s);
+    }
+
+    pub fn insert_tunnel(&mut self, entity: u32, t: TunnelComponent) {
+        self.tunnels.insert(entity, t);
+    }
+    pub fn get_tunnel_mut(&mut self, entity: u32) -> Option<&mut TunnelComponent> {
+        self.tunnels.get_mut(&entity)
+    }
+}
+
+// ── ImsiRegistry ──────────────────────────────────────────────────────────────
+
+/// Maps IMSI → EntityId for fast subscriber lookup.
+#[derive(Default)]
+pub struct ImsiRegistry {
+    map: HashMap<u64, u32>,
+}
+
+impl ImsiRegistry {
+    pub fn new() -> Self { Self::default() }
+    pub fn register(&mut self, imsi: u64, entity: u32) { self.map.insert(imsi, entity); }
+    pub fn deregister(&mut self, imsi: u64) { self.map.remove(&imsi); }
+    pub fn lookup(&self, imsi: u64) -> Option<u32> { self.map.get(&imsi).copied() }
+}
+
+// ── UpfEvent ──────────────────────────────────────────────────────────────────
+
+/// Events emitted to the UPF orchestrator / caller.
+///
+/// The caller mediates between midn-core (which never imports midn-userplane)
+/// and the UPF session manager. See docs/architecture.md §Circular-dep.
 #[derive(Debug, Clone)]
 pub enum UpfEvent {
-    /// Create a data-plane session. Use `ul_teid` as the routing key — the UPF
-    /// MUST install a route entry for exactly this TEID.
     CreateSession {
-        ul_teid:   u32,
+        ul_teid:  u32,
         entity_id: u32,
-        imsi:      u64,
-        ue_ip:     [u8; 4],
-        enb_addr:  [u8; 4],
-        qci:       u8,
+        imsi:     u64,
+        ue_ip:    [u8; 4],
+        enb_addr: [u8; 4],
+        qci:      u8,
     },
-    /// Update DL TEID and eNodeB address after InitialContextSetupResponse.
     UpdateBearer {
         ul_teid:  u32,
         dl_teid:  u32,
         enb_addr: [u8; 4],
     },
-    /// Remove session on detach or UE context release.
     RemoveSession {
         ul_teid: u32,
     },
@@ -54,630 +169,291 @@ pub enum UpfEvent {
 
 // ── Mme ───────────────────────────────────────────────────────────────────────
 
+/// MME state machine.
+///
+/// Owns the in-memory HSS, ECS world, and IMSI registry.
+/// Call [`Mme::hss_mut`] to provision subscribers before processing messages.
 pub struct Mme {
-    pub world:    CoreWorld,
-    pub registry: ImsiRegistry,
+    world:        World,
+    registry:     ImsiRegistry,
     pub hss:      Hss,
-    pub ip_pool:  IpPool,
-
-    attach_ctxs:    HashMap<u32, AttachContext>,
-    enb_to_mme_id:  HashMap<u32, u32>,
-    next_mme_ue_id: u32,
-
-    /// When true, send `InitialContextSetupRequest` after Security Mode Complete
-    /// (Phase 3 flow). When false (default), send AttachAccept directly via
-    /// DownlinkNasTransport (Phase 2 compatible).
-    pub phase3_upf:  bool,
-    /// UPF IPv4 transport address — embedded in ICSR `ErabToSetup.transport_addr`.
-    pub upf_addr:    [u8; 4],
-    /// Next uplink TEID to assign to a new session.
-    next_ul_teid:    u32,
+    phase3_upf:   Option<[u8; 4]>,
+    teid_counter: u32,
 }
 
 impl Mme {
+    /// Phase 2 mode — SecModeComplete → DownlinkNasTransport(AttachAccept).
     pub fn new() -> Self {
         Self {
-            world:          CoreWorld::new(),
-            registry:       ImsiRegistry::new(),
-            hss:            Hss::new(),
-            ip_pool:        IpPool::default(),
-            attach_ctxs:    HashMap::new(),
-            enb_to_mme_id:  HashMap::new(),
-            next_mme_ue_id: 1,
-            phase3_upf:     false,
-            upf_addr:       [127, 0, 0, 1],
-            next_ul_teid:   0x0001_0000,
+            world:        World::new(),
+            registry:     ImsiRegistry::new(),
+            hss:          Hss::new(),
+            phase3_upf:   None,
+            teid_counter: 0x0001_0000,
         }
     }
 
-    /// Enable Phase 3 ICSR flow. `upf_addr` is the UPF's GTP-U listen address
-    /// — included in the ICSR so eNodeBs know where to send UL packets.
+    /// Phase 3 mode — SecModeComplete → InitialContextSetupRequest
+    /// (AttachAccept embedded as nas_pdu) + UpfEvent::CreateSession.
     pub fn with_phase3(mut self, upf_addr: [u8; 4]) -> Self {
-        self.phase3_upf = true;
-        self.upf_addr   = upf_addr;
+        self.phase3_upf = Some(upf_addr);
         self
     }
 
-    // ── Public entry point ────────────────────────────────────────────────────
+    /// Mutable HSS reference for subscriber provisioning.
+    pub fn hss_mut(&mut self) -> &mut Hss { &mut self.hss }
 
-    /// Process an incoming S1AP message. Returns S1AP responses to send to the
-    /// eNodeB and user-plane events for the caller to forward to `SessionManager`.
+    /// Allocate the next UL TEID.  Counter starts at 0x0001_0000.
+    pub fn alloc_ul_teid(&mut self) -> u32 {
+        let t = self.teid_counter;
+        self.teid_counter = self.teid_counter.wrapping_add(1);
+        t
+    }
+
+    /// Main entry point — process one incoming S1AP message.
     pub async fn process_s1ap(
         &mut self,
         msg: S1apMessage,
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+        use midn_proto::s1ap::S1apMessage::*;
         match msg {
-            S1apMessage::InitialUeMessage(ium) => {
-                self.handle_initial_ue_message(ium.enb_ue_s1ap_id, ium.nas_pdu).await
+            InitialUEMessage(m) => {
+                attach::start_attach(
+                    &mut self.world,
+                    &mut self.registry,
+                    &mut self.hss,
+                    m.enb_ue_s1ap_id,
+                    &m.nas_pdu,
+                )
             }
-            S1apMessage::UplinkNasTransport(unt) => {
+            UplinkNasTransport(m) => {
                 self.handle_uplink_nas(
-                    unt.enb_ue_s1ap_id, unt.mme_ue_s1ap_id, unt.nas_pdu,
-                ).await
+                    m.enb_ue_s1ap_id,
+                    m.mme_ue_s1ap_id,
+                    &m.nas_pdu,
+                )
             }
-            S1apMessage::InitialContextSetupResponse(icsrsp) => {
-                self.handle_icsrsp(icsrsp).await
-            }
-            S1apMessage::UeContextReleaseComplete { mme_ue_s1ap_id, .. } => {
-                let events = self.handle_ue_release(mme_ue_s1ap_id);
-                (vec![], events)
-            }
-            _ => {
-                tracing::warn!("Unhandled S1AP message");
-                (vec![], vec![])
-            }
+            InitialContextSetupResponse(m) => self.handle_icsrsp(m),
+            UEContextReleaseComplete(m) => self.handle_release_complete(m),
+            _ => (vec![], vec![]),
         }
     }
 
-    // ── Initial UE Message ────────────────────────────────────────────────────
+    // ── Internal routing ──────────────────────────────────────────────────────
 
-    async fn handle_initial_ue_message(
+    fn handle_uplink_nas(
         &mut self,
         enb_ue_s1ap_id: u32,
-        nas_pdu:        Bytes,
+        mme_ue_s1ap_id: u32,
+        nas_pdu: &[u8],
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        let msg_type = nas_pdu.get(1).copied().unwrap_or(0);
-        if msg_type != MT_ATTACH_REQUEST {
-            tracing::warn!(msg_type, "InitialUeMessage: non-AttachRequest NAS PDU");
-            return (vec![], vec![]);
-        }
-
-        let mme_ue_s1ap_id = self.alloc_mme_ue_id();
-        self.enb_to_mme_id.insert(enb_ue_s1ap_id, mme_ue_s1ap_id);
-
-        match handle_attach_request(
-            &nas_pdu,
-            enb_ue_s1ap_id,
-            mme_ue_s1ap_id,
-            &mut self.world,
-            &mut self.registry,
-            &mut self.hss,
-        ) {
-            Ok((ctx, step)) => {
-                self.attach_ctxs.insert(mme_ue_s1ap_id, ctx);
-                (vec![S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
-                    mme_ue_s1ap_id,
+        use midn_proto::nas::{decode_nas_pdu, NasPdu};
+        match decode_nas_pdu(nas_pdu) {
+            Some(NasPdu::AuthenticationResponse { .. }) => {
+                attach::handle_auth_response(
+                    &mut self.world,
+                    &self.registry,
                     enb_ue_s1ap_id,
-                    nas_pdu: step.nas_pdu,
-                })], vec![])
+                    mme_ue_s1ap_id,
+                    nas_pdu,
+                )
             }
-            Err(reason) => {
-                tracing::warn!(?reason, "Attach request failed");
-                (vec![], vec![])
+            Some(NasPdu::SecurityModeComplete) => {
+                attach::handle_security_mode_complete(
+                    &mut self.world,
+                    enb_ue_s1ap_id,
+                    mme_ue_s1ap_id,
+                    self.phase3_upf,
+                    &mut self.teid_counter,
+                )
             }
-        }
-    }
-
-    // ── Uplink NAS dispatch ───────────────────────────────────────────────────
-
-    async fn handle_uplink_nas(
-        &mut self,
-        enb_ue_s1ap_id: u32,
-        mme_ue_s1ap_id: u32,
-        nas_pdu:        Bytes,
-    ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        let msg_type = nas_pdu.get(1).copied().unwrap_or(0);
-        match msg_type {
-            MT_AUTHENTICATION_RESPONSE => {
-                self.handle_auth_response_msg(enb_ue_s1ap_id, mme_ue_s1ap_id, nas_pdu).await
-            }
-            MT_SECURITY_MODE_COMPLETE => {
-                self.handle_sec_mode_complete_msg(enb_ue_s1ap_id, mme_ue_s1ap_id, nas_pdu).await
-            }
-            MT_ATTACH_COMPLETE => {
-                self.handle_attach_complete_msg(mme_ue_s1ap_id, nas_pdu).await;
-                (vec![], vec![])
+            Some(NasPdu::AttachComplete) => {
+                attach::handle_attach_complete(&mut self.world, mme_ue_s1ap_id)
             }
             _ => {
-                tracing::warn!(msg_type, mme_ue_s1ap_id, "Unhandled uplink NAS type");
+                tracing::warn!(mme_ue_s1ap_id, "UplinkNasTransport: unknown NAS PDU");
                 (vec![], vec![])
             }
         }
     }
 
-    async fn handle_auth_response_msg(
+    /// Handle `InitialContextSetupResponse` from eNodeB (Phase 3).
+    ///
+    /// The eNodeB reports the DL TEID it allocated and its transport address.
+    /// We update the ECS `TunnelComponent` and emit `UpfEvent::UpdateBearer`
+    /// so the UPF caller can update its routing table.
+    fn handle_icsrsp(
         &mut self,
-        enb_ue_s1ap_id: u32,
-        mme_ue_s1ap_id: u32,
-        nas_pdu:        Bytes,
+        resp: midn_proto::s1ap::InitialContextSetupResponse,
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        let ctx = match self.attach_ctxs.get_mut(&mme_ue_s1ap_id) {
-            Some(c) => c,
+        let entity = resp.mme_ue_s1ap_id;
+
+        let erab = match resp.e_rabs_setup.first() {
+            Some(e) => e,
             None => {
-                tracing::warn!(mme_ue_s1ap_id, "No attach context for auth response");
+                tracing::warn!(entity, "ICSRSP: no e-RABs in response");
                 return (vec![], vec![]);
             }
         };
-        match handle_auth_response(ctx, &nas_pdu, &mut self.world) {
-            Ok(step) => (vec![S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id,
-                nas_pdu: step.nas_pdu,
-            })], vec![]),
-            Err(reason) => {
-                tracing::warn!(?reason, mme_ue_s1ap_id, "Auth response handling failed");
-                (vec![], vec![])
-            }
+
+        let dl_teid  = u32::from_be_bytes(erab.gtp_teid);
+        let enb_addr = erab.transport_layer_addr;
+
+        // Update TunnelComponent in ECS.
+        if let Some(t) = self.world.get_tunnel_mut(entity) {
+            let ul_teid = t.ul_teid;
+            t.dl_teid  = dl_teid;
+            t.enb_addr = enb_addr;
+
+            let evt = UpfEvent::UpdateBearer { ul_teid, dl_teid, enb_addr };
+            return (vec![], vec![evt]);
         }
+
+        tracing::warn!(entity, "ICSRSP: no tunnel component — Phase 2 mode?");
+        (vec![], vec![])
     }
 
-    async fn handle_sec_mode_complete_msg(
+    /// Handle `UEContextReleaseComplete` — despawn entity and emit RemoveSession.
+    fn handle_release_complete(
         &mut self,
-        enb_ue_s1ap_id: u32,
-        mme_ue_s1ap_id: u32,
-        nas_pdu:        Bytes,
+        msg: midn_proto::s1ap::UEContextReleaseComplete,
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        let ul_teid = self.alloc_ul_teid();
+        let entity = msg.mme_ue_s1ap_id;
 
-        let ctx = match self.attach_ctxs.get_mut(&mme_ue_s1ap_id) {
-            Some(c) => c,
-            None => {
-                tracing::warn!(mme_ue_s1ap_id, "No attach context for sec mode complete");
-                return (vec![], vec![]);
-            }
-        };
+        // Collect ul_teid before despawn removes the tunnel component.
+        let ul_teid = self.world
+            .get_tunnel_mut(entity)
+            .map(|t| t.ul_teid);
 
-        match handle_security_mode_complete(ctx, &nas_pdu, &mut self.world, &mut self.ip_pool, ul_teid) {
-            Ok(step) => {
-                // Extract session info for the UpfEvent — borrow ends before we use ctx.
-                let ue_ip = self.world.session.get(&ctx.entity_id)
-                    .map(|s| s.ip_address)
-                    .unwrap_or([0; 4]);
-                let entity_id = ctx.entity_id.0;
-                let imsi      = ctx.imsi;
-
-                let upf_event = UpfEvent::CreateSession {
-                    ul_teid,
-                    entity_id,
-                    imsi,
-                    ue_ip,
-                    enb_addr: [0; 4], // updated by ICSRSP
-                    qci: 9,
-                };
-
-                if self.phase3_upf {
-                    // Phase 3: send InitialContextSetupRequest to eNodeB.
-                    // AttachAccept NAS PDU is embedded inside the ICSR;
-                    // eNodeB delivers it to the UE via RRC Connection Reconfiguration.
-                    let security_key = self.world.security.get(&self.attach_ctxs[&mme_ue_s1ap_id].entity_id)
-                        .map(|s| s.kasme)
-                        .unwrap_or([0; 32]);
-
-                    let icsr = InitialContextSetupRequest {
-                        mme_ue_s1ap_id,
-                        enb_ue_s1ap_id,
-                        ue_ambr_dl: 100_000_000, // 100 Mbps
-                        ue_ambr_ul:  50_000_000, //  50 Mbps
-                        e_rabs_to_setup: vec![ErabToSetup {
-                            e_rab_id:             5,
-                            qci:                  9,
-                            alloc_retention_prio: 1,
-                            transport_addr: self.upf_addr,
-                            gtp_teid:       ul_teid,
-                        }],
-                        nas_pdu:      Some(step.nas_pdu), // AttachAccept
-                        security_key,
-                    };
-
-                    (vec![S1apMessage::InitialContextSetupRequest(icsr)], vec![upf_event])
-                } else {
-                    // Phase 2: send AttachAccept directly.
-                    (vec![S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
-                        mme_ue_s1ap_id,
-                        enb_ue_s1ap_id,
-                        nas_pdu: step.nas_pdu,
-                    })], vec![upf_event])
-                }
-            }
-            Err(reason) => {
-                tracing::warn!(?reason, mme_ue_s1ap_id, "Sec mode complete failed");
-                (vec![], vec![])
-            }
-        }
-    }
-
-    // ── Initial Context Setup Response ────────────────────────────────────────
-
-    async fn handle_icsrsp(
-        &mut self,
-        icsrsp: S1apIcsrsp,
-    ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        let ctx = match self.attach_ctxs.get(&icsrsp.mme_ue_s1ap_id) {
-            Some(c) => c,
-            None => {
-                tracing::warn!(mme_ue_s1ap_id = icsrsp.mme_ue_s1ap_id, "No attach context for ICSRSP");
-                return (vec![], vec![]);
-            }
-        };
-
-        let ul_teid = match ctx.ul_teid {
-            Some(t) => t,
-            None => {
-                tracing::warn!("ICSRSP arrived but no ul_teid in attach context");
-                return (vec![], vec![]);
-            }
-        };
-
-        let (dl_teid, enb_addr) = match icsrsp.e_rabs_setup.first() {
-            Some(item) => (item.gtp_teid, item.transport_addr),
-            None => {
-                tracing::warn!("ICSRSP has no E-RAB setup items");
-                return (vec![], vec![]);
-            }
-        };
-
-        if let Err(e) = handle_initial_context_setup_response(ctx, dl_teid, enb_addr, &mut self.world) {
-            tracing::warn!(?e, "ICSRSP tunnel update failed");
-            return (vec![], vec![]);
+        // Remove IMSI from registry.
+        if let Some(ctx) = self.world.get_attach_context(entity) {
+            self.registry.deregister(ctx.imsi);
         }
 
-        let event = UpfEvent::UpdateBearer { ul_teid, dl_teid, enb_addr };
-        tracing::info!(ul_teid, dl_teid, enb_addr = ?enb_addr, "Bearer established");
-        (vec![], vec![event])
-    }
+        self.world.despawn(entity);
+        tracing::info!(entity, "UEContextReleaseComplete — entity despawned");
 
-    async fn handle_attach_complete_msg(&mut self, mme_ue_s1ap_id: u32, nas_pdu: Bytes) {
-        let ctx = match self.attach_ctxs.get_mut(&mme_ue_s1ap_id) {
-            Some(c) => c,
-            None    => return,
-        };
-        if let Err(reason) = handle_attach_complete(ctx, &nas_pdu) {
-            tracing::warn!(?reason, "Attach complete handling failed");
+        match ul_teid {
+            Some(t) => (vec![], vec![UpfEvent::RemoveSession { ul_teid: t }]),
+            None    => (vec![], vec![]),
         }
     }
-
-    // ── UE release ────────────────────────────────────────────────────────────
-
-    fn handle_ue_release(&mut self, mme_ue_s1ap_id: u32) -> Vec<UpfEvent> {
-        if let Some(ctx) = self.attach_ctxs.remove(&mme_ue_s1ap_id) {
-            self.ip_pool.release(ctx.entity_id);
-            if let Some(ImsiComponent(imsi)) = self.world.imsi.get(&ctx.entity_id).copied() {
-                self.registry.deregister(imsi);
-            }
-            self.world.despawn(ctx.entity_id);
-            tracing::info!(mme_ue_s1ap_id, "UE context released");
-            if let Some(ul_teid) = ctx.ul_teid {
-                return vec![UpfEvent::RemoveSession { ul_teid }];
-            }
-        }
-        vec![]
-    }
-
-    // ── Allocators ────────────────────────────────────────────────────────────
-
-    fn alloc_mme_ue_id(&mut self) -> u32 {
-        let id = self.next_mme_ue_id;
-        self.next_mme_ue_id = self.next_mme_ue_id.wrapping_add(1);
-        id
-    }
-
-    fn alloc_ul_teid(&mut self) -> u32 {
-        let t = self.next_ul_teid;
-        self.next_ul_teid = self.next_ul_teid.wrapping_add(1);
-        if self.next_ul_teid < 0x0001_0000 { self.next_ul_teid = 0x0001_0000; }
-        t
-    }
-
-    // ── Metrics ───────────────────────────────────────────────────────────────
-
-    pub fn subscriber_count(&self) -> usize  { self.world.len() }
-    pub fn authenticated_count(&self) -> usize { self.world.authenticated_count() }
 }
 
-impl Default for Mme { fn default() -> Self { Self::new() } }
+impl Default for Mme {
+    fn default() -> Self { Self::new() }
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use midn_proto::s1ap::messages::{
-        ErabSetupItem, InitialContextSetupResponse as IcsrResp, InitialUeMessage,
-    };
-    use midn_proto::nas::codec::{
-        encode_attach_request, encode_auth_response,
-        encode_sec_mode_complete, encode_attach_complete, decode_nas, NasPdu,
-    };
 
-    // ── Phase 2 gate — full attach, direct AttachAccept ───────────────────────
+    // ── World / ECS ───────────────────────────────────────────────────────────
 
-    #[tokio::test]
-    async fn test_full_attach_procedure_phase2_gate() {
-        let imsi: u64 = 234_15_1234567890_u64;
-        let mut mme = Mme::new(); // phase3_upf = false
-
-        mme.hss.provision_hex(imsi,
-            "465b5ce8b199b49faa5f0a2ee238a6bc",
-            "cd63cb71954a9f4e48a5994e37a02baf",
-        ).expect("valid test credentials");
-
-        // Step 1: Attach Request
-        let (responses, events) = mme.process_s1ap(S1apMessage::InitialUeMessage(
-            InitialUeMessage {
-                enb_ue_s1ap_id: 1,
-                nas_pdu:        encode_attach_request(imsi, 0x01, 0x07),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-                rrc_cause:      0,
-            }
-        )).await;
-        assert_eq!(responses.len(), 1, "MME should send AuthenticationRequest");
-        assert!(events.is_empty());
-
-        let (mme_ue_s1ap_id, _) = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => (d.mme_ue_s1ap_id, d.nas_pdu.clone()),
-            _ => panic!("Expected DownlinkNasTransport(AuthRequest)"),
-        };
-
-        // Step 2: Auth Response (correct RES)
-        let entity_id = mme.registry.lookup(imsi).expect("IMSI registered");
-        let xres = mme.world.security.get(&entity_id).map(|s| s.pending_xres).unwrap();
-
-        let (responses, _) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 1,
-                nas_pdu:        encode_auth_response(&xres),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert_eq!(responses.len(), 1, "MME should send SecurityModeCommand");
-        assert!(mme.world.is_authenticated(entity_id));
-
-        // Step 3: Security Mode Complete → Phase 2 sends AttachAccept directly
-        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 1,
-                nas_pdu:        encode_sec_mode_complete(),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert_eq!(responses.len(), 1, "Phase 2: MME should send AttachAccept directly");
-        assert_eq!(events.len(), 1,    "Phase 2: CreateSession event emitted");
-
-        let attach_accept_pdu = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => d.nas_pdu.clone(),
-            _ => panic!("Phase 2: Expected DownlinkNasTransport(AttachAccept)"),
-        };
-        match decode_nas(&attach_accept_pdu) {
-            Ok(NasPdu::AttachAccept(aa)) => {
-                assert!(aa.ip_address.is_some());
-                assert_eq!(aa.ip_address.unwrap()[0], 10);
-            }
-            other => panic!("Expected AttachAccept, got {other:?}"),
-        }
-        match &events[0] {
-            UpfEvent::CreateSession { ul_teid, ue_ip, .. } => {
-                assert_eq!(ue_ip[0], 10, "UE IP should be in 10.x range");
-                assert!(*ul_teid >= 0x0001_0000, "UL TEID should be in allocated range");
-            }
-            _ => panic!("Expected CreateSession event"),
-        }
-
-        // Step 4: Attach Complete
-        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 1,
-                nas_pdu:        encode_attach_complete(),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert!(responses.is_empty());
-        assert!(events.is_empty());
-
-        assert_eq!(mme.subscriber_count(),    1);
-        assert_eq!(mme.authenticated_count(), 1);
-        assert!(mme.world.is_authenticated(entity_id));
-        assert!(mme.world.session.contains_key(&entity_id));
-        assert!(mme.world.tunnel.contains_key(&entity_id));
+    #[test]
+    fn ecs_spawn_returns_sequential_ids() {
+        let mut w = World::new();
+        assert_eq!(w.spawn(), 0);
+        assert_eq!(w.spawn(), 1);
+        assert_eq!(w.spawn(), 2);
     }
 
-    // ── Phase 3 gate — ICSR flow, real DL TEID from eNodeB ───────────────────
-
-    #[tokio::test]
-    async fn test_full_attach_procedure_phase3_icsr() {
-        let imsi: u64 = 234_15_9876543210_u64;
-        let mut mme = Mme::new().with_phase3([10, 100, 0, 1]);
-
-        mme.hss.provision_hex(imsi,
-            "465b5ce8b199b49faa5f0a2ee238a6bc",
-            "cd63cb71954a9f4e48a5994e37a02baf",
-        ).unwrap();
-
-        // Step 1: Attach Request
-        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(
-            InitialUeMessage {
-                enb_ue_s1ap_id: 2,
-                nas_pdu:        encode_attach_request(imsi, 0x01, 0x07),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-                rrc_cause:      0,
-            }
-        )).await;
-        assert_eq!(responses.len(), 1);
-        let (mme_ue_s1ap_id, _) = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => (d.mme_ue_s1ap_id, d.nas_pdu.clone()),
-            _ => panic!(),
-        };
-
-        // Step 2: Auth Response
-        let entity_id = mme.registry.lookup(imsi).unwrap();
-        let xres = mme.world.security.get(&entity_id).map(|s| s.pending_xres).unwrap();
-        let (responses, _) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 2,
-                nas_pdu:        encode_auth_response(&xres),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert_eq!(responses.len(), 1, "SecModeCmd");
-
-        // Step 3: Security Mode Complete → Phase 3 sends ICSR
-        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 2,
-                nas_pdu:        encode_sec_mode_complete(),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert_eq!(responses.len(), 1, "Phase 3: MME should send InitialContextSetupRequest");
-        assert_eq!(events.len(),    1, "Phase 3: CreateSession event emitted");
-
-        let icsr = match &responses[0] {
-            S1apMessage::InitialContextSetupRequest(r) => r,
-            _ => panic!("Phase 3: Expected InitialContextSetupRequest, got {:?}", responses[0]),
-        };
-        let ul_teid_from_icsr = icsr.e_rabs_to_setup[0].gtp_teid;
-        assert_eq!(icsr.e_rabs_to_setup[0].transport_addr, [10, 100, 0, 1], "UPF addr in ICSR");
-        // Verify AttachAccept is embedded
-        let nas_in_icsr = icsr.nas_pdu.clone().unwrap();
-        match decode_nas(&nas_in_icsr) {
-            Ok(NasPdu::AttachAccept(aa)) => {
-                assert!(aa.ip_address.is_some(), "ICSR must carry AttachAccept with IP");
-            }
-            other => panic!("Expected AttachAccept in ICSR NAS PDU, got {other:?}"),
-        }
-
-        let create_ul_teid = match &events[0] {
-            UpfEvent::CreateSession { ul_teid, .. } => *ul_teid,
-            _ => panic!("Expected CreateSession"),
-        };
-        assert_eq!(create_ul_teid, ul_teid_from_icsr, "CreateSession ul_teid must match ICSR");
-
-        // Step 4: Simulate eNodeB ICSRSP with its assigned DL TEID
-        let enb_dl_teid = 0xDEAD_BEEF_u32;
-        let enb_addr    = [192u8, 168, 1, 100];
-        let (responses, events) = mme.process_s1ap(
-            S1apMessage::InitialContextSetupResponse(IcsrResp {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 2,
-                e_rabs_setup: vec![ErabSetupItem {
-                    e_rab_id:       5,
-                    transport_addr: enb_addr,
-                    gtp_teid:       enb_dl_teid,
-                }],
-                e_rabs_failed: vec![],
-            })
-        ).await;
-        assert!(responses.is_empty(), "ICSRSP needs no S1AP response");
-        assert_eq!(events.len(), 1, "UpdateBearer event emitted");
-        match &events[0] {
-            UpfEvent::UpdateBearer { ul_teid, dl_teid, enb_addr: ea } => {
-                assert_eq!(*ul_teid,  ul_teid_from_icsr);
-                assert_eq!(*dl_teid,  enb_dl_teid);
-                assert_eq!(*ea,       enb_addr);
-            }
-            _ => panic!("Expected UpdateBearer"),
-        }
-        // ECS TunnelComponent updated
-        let tunnel = mme.world.tunnel.get(&entity_id).unwrap();
-        assert_eq!(tunnel.dl_teid,   enb_dl_teid);
-        assert_eq!(tunnel.enb_addr,  enb_addr);
-        assert_eq!(tunnel.ul_teid,   ul_teid_from_icsr);
-
-        // Step 5: Attach Complete (eNodeB relayed AttachAccept → UE via RRC)
-        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id,
-                enb_ue_s1ap_id: 2,
-                nas_pdu:        encode_attach_complete(),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert!(responses.is_empty());
-        assert!(events.is_empty());
-
-        assert_eq!(mme.subscriber_count(),    1);
-        assert_eq!(mme.authenticated_count(), 1);
-        assert!(mme.world.is_authenticated(entity_id));
-        assert!(mme.world.session.contains_key(&entity_id));
+    #[test]
+    fn ecs_spawn_reuses_despawned_ids() {
+        let mut w = World::new();
+        let a = w.spawn();
+        let b = w.spawn();
+        w.despawn(a);
+        let c = w.spawn(); // should reuse a
+        assert_eq!(c, a);
+        let _ = b;
     }
 
-    // ── Failure paths ─────────────────────────────────────────────────────────
+    #[test]
+    fn ecs_spawn_with_all_components() {
+        let mut w = World::new();
+        let e = w.spawn();
+        w.insert_attach_context(e, AttachContext {
+            imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
+            rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
+            sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
+        });
+        w.insert_session_state(e, SessionState { imsi: 1, ul_teid: 0x0001_0000 });
+        w.insert_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0;4] });
+        assert!(w.get_attach_context(e).is_some());
+    }
 
-    #[tokio::test]
-    async fn test_attach_fails_for_unknown_imsi() {
+    #[test]
+    fn ecs_despawn_removes_all_components() {
+        let mut w = World::new();
+        let e = w.spawn();
+        w.insert_attach_context(e, AttachContext {
+            imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
+            rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
+            sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
+        });
+        w.despawn(e);
+        assert!(w.get_attach_context(e).is_none());
+    }
+
+    // ── ImsiRegistry ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn imsi_registry_register_and_lookup() {
+        let mut r = ImsiRegistry::new();
+        r.register(901_700_000_000_001, 42);
+        assert_eq!(r.lookup(901_700_000_000_001), Some(42));
+        assert_eq!(r.lookup(999), None);
+    }
+
+    #[test]
+    fn imsi_registry_deregister() {
+        let mut r = ImsiRegistry::new();
+        r.register(1, 0);
+        r.deregister(1);
+        assert_eq!(r.lookup(1), None);
+    }
+
+    // ── Mme constructors ──────────────────────────────────────────────────────
+
+    #[test]
+    fn mme_new_is_phase2() {
+        let mme = Mme::new();
+        assert!(mme.phase3_upf.is_none());
+    }
+
+    #[test]
+    fn mme_with_phase3_sets_flag() {
+        let mme = Mme::new().with_phase3([127, 0, 0, 1]);
+        assert_eq!(mme.phase3_upf, Some([127, 0, 0, 1]));
+    }
+
+    #[test]
+    fn alloc_ul_teid_starts_at_base() {
         let mut mme = Mme::new();
-        let (responses, events) = mme.process_s1ap(S1apMessage::InitialUeMessage(
-            InitialUeMessage {
-                enb_ue_s1ap_id: 1,
-                nas_pdu:        encode_attach_request(999_99_9999999999_u64, 1, 7),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-                rrc_cause:      0,
-            }
-        )).await;
-        assert!(responses.is_empty(), "Unknown IMSI: no response");
-        assert!(events.is_empty());
-        assert_eq!(mme.subscriber_count(), 0);
+        assert_eq!(mme.alloc_ul_teid(), 0x0001_0000);
+        assert_eq!(mme.alloc_ul_teid(), 0x0001_0001);
     }
 
-    #[tokio::test]
-    async fn test_attach_fails_on_wrong_res() {
-        let imsi = 234_15_0000000001_u64;
+    // ── HSS ───────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn hss_provision_and_generate() {
         let mut mme = Mme::new();
-        mme.hss.provision_hex(imsi,
-            "465b5ce8b199b49faa5f0a2ee238a6bc",
-            "cd63cb71954a9f4e48a5994e37a02baf",
-        ).unwrap();
-
-        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(
-            InitialUeMessage {
-                enb_ue_s1ap_id: 3,
-                nas_pdu:        encode_attach_request(imsi, 1, 7),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-                rrc_cause:      0,
-            }
-        )).await;
-        let mme_ue_id = match &responses[0] {
-            S1apMessage::DownlinkNasTransport(d) => d.mme_ue_s1ap_id,
-            _ => panic!(),
-        };
-
-        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(
-            UplinkNasTransport {
-                mme_ue_s1ap_id: mme_ue_id,
-                enb_ue_s1ap_id: 3,
-                nas_pdu:        encode_auth_response(&[0u8; 8]),
-                tai:            [0; 5],
-                eutran_cgi:     [0; 7],
-            }
-        )).await;
-        assert!(responses.is_empty(), "Wrong RES: no response");
-        assert!(events.is_empty());
-
-        let entity_id = mme.registry.lookup(imsi).expect("entity still exists");
-        assert!(!mme.world.is_authenticated(entity_id));
+        mme.hss.provision(
+            901_700_000_000_001,
+            [0x46,0x5b,0x5c,0xe8,0xb1,0x99,0xb4,0x9f,0xaa,0x5f,0x0a,0x2e,0xe2,0x38,0xa6,0xbc],
+            [0xcd,0x63,0xcb,0x71,0x95,0x4a,0x9f,0x4e,0x48,0xa5,0x99,0x4e,0x37,0xa0,0x2b,0xaf],
+        );
+        let info = mme.hss.generate_auth_vector(901_700_000_000_001);
+        assert!(info.is_some());
     }
-            }
+
+    #[test]
+    fn hss_unknown_imsi_returns_none() {
+        let mut mme = Mme::new();
+        assert!(mme.hss.generate_auth_vector(999).is_none());
+    }
+}
