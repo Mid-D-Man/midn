@@ -37,7 +37,7 @@ use crate::milenage::MilenageContext;
 /// Outputs: mac_a (8), mac_s (8), res (8), ck (16), ik (16), ak (6), ak_star (6)
 ///
 /// Returns 0 on success, -1 if any pointer is null.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_generate_vector(
     ki_ptr:      *const u8,
     opc_ptr:     *const u8,
@@ -73,9 +73,7 @@ pub unsafe extern "C" fn midn_milenage_generate_vector(
     std::ptr::copy_nonoverlapping(sqn_ptr,  sqn.as_mut_ptr(),       6);
     std::ptr::copy_nonoverlapping(amf_ptr,  amf_buf.as_mut_ptr(),   2);
 
-    // Fixed: AuthKey/OpCode are from keys (same as ffi imports — no mismatch).
     let ctx = MilenageContext::new(AuthKey(ki_buf), OpCode(opc_buf));
-    // Fixed: generate_vector takes (&rand, &sqn, &amf) — 3 ref args, not newtypes.
     let vec = ctx.generate_vector(&rand_buf, &sqn, &amf_buf);
 
     std::ptr::copy_nonoverlapping(vec.mac_a.as_ptr(),   mac_a_out,    8);
@@ -99,7 +97,7 @@ pub unsafe extern "C" fn midn_milenage_generate_vector(
 /// Outputs: opc_out (16)
 ///
 /// Returns 0 on success, -1 if any pointer is null.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_compute_opc(
     ki_ptr:  *const u8,
     op_ptr:  *const u8,
@@ -126,8 +124,8 @@ pub unsafe extern "C" fn midn_milenage_compute_opc(
 ///
 /// Inputs: expected_res (8 — XRES from network), received_res (8 — RES from UE)
 ///
-/// Returns:  1 if match, 0 if mismatch, -1 if any pointer is null.
-#[no_mangle]
+/// Returns: 1 if match, 0 if mismatch, -1 if any pointer is null.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_verify_res(
     expected_ptr: *const u8,
     received_ptr: *const u8,
@@ -142,4 +140,4 @@ pub unsafe extern "C" fn midn_milenage_verify_res(
     std::ptr::copy_nonoverlapping(received_ptr, received.as_mut_ptr(), 8);
 
     if MilenageContext::verify_res(&expected, &received) { 1 } else { 0 }
-    }
+}
