@@ -1,38 +1,27 @@
 // crates/midn-core/src/lib.rs
-//! midn-core — Control Plane Orchestrator
+//! midn-core — MME/AMF state machine, ECS subscriber registry, in-memory HSS.
 //!
-//! Implements the MME (LTE) and AMF (5G NR) state machines backed by
-//! an ECS subscriber registry.
+//! ## Public surface
 //!
-//! ## Architecture
+//! | Item           | Path                         |
+//! |----------------|------------------------------|
+//! | Mme            | `midn_core::mme::Mme`        |
+//! | UpfEvent       | `midn_core::UpfEvent`        |
+//! | Hss            | `midn_core::hss::Hss`        |
+//! | HssAuthInfo    | `midn_core::hss::HssAuthInfo`|
 //!
-//! ```text
-//! CoreWorld (ECS)
-//!   └── Entities = UEs (one per attached subscriber)
-//!       ├── ImsiComponent    — subscriber identity
-//!       ├── AuthState        — where in the AKA procedure we are
-//!       ├── SecurityContext  — session keys (zeroized on drop)
-//!       ├── SessionState     — assigned IP, APN, bearer
-//!       └── TunnelComponent  — GTP-U TEID mapping
-//!
-//! ImsiRegistry (reverse index: IMSI u64 → EntityId)
-//!
-//! Mme / Amf
-//!   └── Processes incoming S1AP / NGAP messages
-//!   └── Calls midn-auth for AKA procedure
-//!   └── Updates ECS world state
-//! ```
+//! S1AP types are re-exported as `crate::s1ap` within this crate (backed by
+//! `midn_proto::s1ap`).  External users import directly from `midn_proto`.
 
-
-pub mod ecs;
 pub mod hss;
 pub mod mme;
-pub mod amf;
 
-pub use ecs::components::{
-    AuthFailReason, AuthState, ImsiComponent, SecurityContext, SessionState, TunnelComponent,
-};
-pub use ecs::registry::ImsiRegistry;
-pub use ecs::world::{CoreWorld, EntityId};
-pub use hss::Hss;
-pub use mme::{Mme, UpfEvent};
+/// Thin re-export so every module inside midn-core can write
+/// `use crate::s1ap::S1apMessage` without pulling in the full proto path.
+pub(crate) mod s1ap {
+    pub use midn_proto::s1ap::*;
+}
+
+// UpfEvent re-exported at crate root per key_api spec
+// (`re_exported_as: midn_core::UpfEvent`).
+pub use mme::state_machine::UpfEvent;
