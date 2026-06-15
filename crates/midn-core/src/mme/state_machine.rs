@@ -9,15 +9,13 @@
 //!
 //! ## Phase modes
 //!
-//! | Mode    | Trigger                  | SecModeComplete response         |
-//! |---------|--------------------------|----------------------------------|
+//! | Mode    | Trigger                  | SecModeComplete response          |
+//! |---------|--------------------------|-----------------------------------|
 //! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept)|
 //! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest        |
 
 use std::collections::HashMap;
 
-// Fixed: removed `UplinkNasTransport` — it is accessed via the S1apMessage
-// enum variant, never used as a standalone type in this module.
 use crate::s1ap::S1apMessage;
 use crate::hss::Hss;
 use crate::mme::attach;
@@ -34,15 +32,15 @@ pub struct AttachContext {
     pub imsi:           u64,
     pub enb_ue_s1ap_id: u32,
     pub mme_ue_s1ap_id: u32,
-    /// 128-bit RAND used in the auth challenge (stored for re-send if needed).
+    /// 128-bit RAND used in the auth challenge.
     pub rand:           [u8; 16],
     /// XRES = f2 output; compared with UE's RES in constant time.
     pub xres:           [u8; 8],
-    /// f3 output — used for deriving KeNB / K_ASME.
+    /// f3 output — used for deriving Kasme.
     pub ck:             [u8; 16],
-    /// f4 output — used for deriving KeNB / K_ASME.
+    /// f4 output — used for deriving Kasme.
     pub ik:             [u8; 16],
-    /// SQN used for AUTN; needed only for resync — stored for completeness.
+    /// SQN used for AUTN.
     pub sqn_used:       [u8; 6],
     /// UE PDN address (from AttachRequest or allocated by MME).
     pub ue_ip:          [u8; 4],
@@ -60,21 +58,13 @@ pub struct SessionState {
 /// GTP-U tunnel endpoint — updated by `handle_icsrsp` with real DL TEID.
 #[derive(Clone, Debug)]
 pub struct TunnelComponent {
-    /// Uplink TEID (MME-allocated; key in the UPF routing table).
     pub ul_teid:  u32,
-    /// Downlink TEID (eNodeB-assigned; filled after ICSRSP).
     pub dl_teid:  u32,
-    /// eNodeB transport address (filled after ICSRSP).
     pub enb_addr: [u8; 4],
 }
 
 // ── World (simple ECS) ────────────────────────────────────────────────────────
 
-/// Minimal entity-component system for UE session tracking.
-///
-/// Benchmarks:
-///   - `ecs_spawn`:                   ~1 ns  (Vec push, no component alloc)
-///   - `ecs_spawn_with_all_components`: ~400 ns (3 HashMap inserts)
 #[derive(Default)]
 pub struct World {
     next_id:         u32,
@@ -87,7 +77,6 @@ pub struct World {
 impl World {
     pub fn new() -> Self { Self::default() }
 
-    /// Allocate a new entity ID in ~1 ns.
     pub fn spawn(&mut self) -> u32 {
         self.free_ids.pop().unwrap_or_else(|| {
             let id = self.next_id;
@@ -96,7 +85,6 @@ impl World {
         })
     }
 
-    /// Deallocate entity and remove all its components.
     pub fn despawn(&mut self, entity: u32) {
         self.attach_contexts.remove(&entity);
         self.session_states.remove(&entity);
@@ -128,7 +116,6 @@ impl World {
 
 // ── ImsiRegistry ──────────────────────────────────────────────────────────────
 
-/// Maps IMSI → EntityId for fast subscriber lookup.
 #[derive(Default)]
 pub struct ImsiRegistry {
     map: HashMap<u64, u32>,
@@ -144,18 +131,15 @@ impl ImsiRegistry {
 // ── UpfEvent ──────────────────────────────────────────────────────────────────
 
 /// Events emitted to the UPF orchestrator / caller.
-///
-/// The caller mediates between midn-core (which never imports midn-userplane)
-/// and the UPF session manager. See docs/architecture.md §Circular-dep.
 #[derive(Debug, Clone)]
 pub enum UpfEvent {
     CreateSession {
-        ul_teid:  u32,
+        ul_teid:   u32,
         entity_id: u32,
-        imsi:     u64,
-        ue_ip:    [u8; 4],
-        enb_addr: [u8; 4],
-        qci:      u8,
+        imsi:      u64,
+        ue_ip:     [u8; 4],
+        enb_addr:  [u8; 4],
+        qci:       u8,
     },
     UpdateBearer {
         ul_teid:  u32,
@@ -169,10 +153,6 @@ pub enum UpfEvent {
 
 // ── Mme ───────────────────────────────────────────────────────────────────────
 
-/// MME state machine.
-///
-/// Owns the in-memory HSS, ECS world, and IMSI registry.
-/// Call [`Mme::hss_mut`] to provision subscribers before processing messages.
 pub struct Mme {
     world:        World,
     registry:     ImsiRegistry,
@@ -193,17 +173,14 @@ impl Mme {
         }
     }
 
-    /// Phase 3 mode — SecModeComplete → InitialContextSetupRequest
-    /// (AttachAccept embedded as nas_pdu) + UpfEvent::CreateSession.
+    /// Phase 3 mode — SecModeComplete → InitialContextSetupRequest + UpfEvent::CreateSession.
     pub fn with_phase3(mut self, upf_addr: [u8; 4]) -> Self {
         self.phase3_upf = Some(upf_addr);
         self
     }
 
-    /// Mutable HSS reference for subscriber provisioning.
     pub fn hss_mut(&mut self) -> &mut Hss { &mut self.hss }
 
-    /// Allocate the next UL TEID.  Counter starts at 0x0001_0000.
     pub fn alloc_ul_teid(&mut self) -> u32 {
         let t = self.teid_counter;
         self.teid_counter = self.teid_counter.wrapping_add(1);
@@ -217,7 +194,7 @@ impl Mme {
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
         use midn_proto::s1ap::S1apMessage::*;
         match msg {
-            InitialUEMessage(m) => {
+            InitialUeMessage(m) => {
                 attach::start_attach(
                     &mut self.world,
                     &mut self.registry,
@@ -234,7 +211,7 @@ impl Mme {
                 )
             }
             InitialContextSetupResponse(m) => self.handle_icsrsp(m),
-            UEContextReleaseComplete(m) => self.handle_release_complete(m),
+            UeContextReleaseComplete(m)    => self.handle_release_complete(m),
             _ => (vec![], vec![]),
         }
     }
@@ -247,9 +224,9 @@ impl Mme {
         mme_ue_s1ap_id: u32,
         nas_pdu: &[u8],
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        use midn_proto::nas::{decode_nas_pdu, NasPdu};
-        match decode_nas_pdu(nas_pdu) {
-            Some(NasPdu::AuthenticationResponse { .. }) => {
+        use midn_proto::nas::{decode_nas, NasPdu};
+        match decode_nas(nas_pdu) {
+            Ok(NasPdu::AuthenticationResponse(..)) => {
                 attach::handle_auth_response(
                     &mut self.world,
                     &self.registry,
@@ -258,7 +235,7 @@ impl Mme {
                     nas_pdu,
                 )
             }
-            Some(NasPdu::SecurityModeComplete) => {
+            Ok(NasPdu::SecurityModeComplete) => {
                 attach::handle_security_mode_complete(
                     &mut self.world,
                     enb_ue_s1ap_id,
@@ -267,7 +244,7 @@ impl Mme {
                     &mut self.teid_counter,
                 )
             }
-            Some(NasPdu::AttachComplete) => {
+            Ok(NasPdu::AttachComplete) => {
                 attach::handle_attach_complete(&mut self.world, mme_ue_s1ap_id)
             }
             _ => {
@@ -278,10 +255,6 @@ impl Mme {
     }
 
     /// Handle `InitialContextSetupResponse` from eNodeB (Phase 3).
-    ///
-    /// The eNodeB reports the DL TEID it allocated and its transport address.
-    /// We update the ECS `TunnelComponent` and emit `UpfEvent::UpdateBearer`
-    /// so the UPF caller can update its routing table.
     fn handle_icsrsp(
         &mut self,
         resp: midn_proto::s1ap::InitialContextSetupResponse,
@@ -299,7 +272,6 @@ impl Mme {
         let dl_teid  = u32::from_be_bytes(erab.gtp_teid);
         let enb_addr = erab.transport_layer_addr;
 
-        // Update TunnelComponent in ECS.
         if let Some(t) = self.world.get_tunnel_mut(entity) {
             let ul_teid = t.ul_teid;
             t.dl_teid  = dl_teid;
@@ -313,25 +285,23 @@ impl Mme {
         (vec![], vec![])
     }
 
-    /// Handle `UEContextReleaseComplete` — despawn entity and emit RemoveSession.
+    /// Handle `UeContextReleaseComplete` — despawn entity and emit RemoveSession.
     fn handle_release_complete(
         &mut self,
-        msg: midn_proto::s1ap::UEContextReleaseComplete,
+        msg: midn_proto::s1ap::UeContextReleaseComplete,
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
         let entity = msg.mme_ue_s1ap_id;
 
-        // Collect ul_teid before despawn removes the tunnel component.
         let ul_teid = self.world
             .get_tunnel_mut(entity)
             .map(|t| t.ul_teid);
 
-        // Remove IMSI from registry.
         if let Some(ctx) = self.world.get_attach_context(entity) {
             self.registry.deregister(ctx.imsi);
         }
 
         self.world.despawn(entity);
-        tracing::info!(entity, "UEContextReleaseComplete — entity despawned");
+        tracing::info!(entity, "UeContextReleaseComplete — entity despawned");
 
         match ul_teid {
             Some(t) => (vec![], vec![UpfEvent::RemoveSession { ul_teid: t }]),
@@ -350,8 +320,6 @@ impl Default for Mme {
 mod tests {
     use super::*;
 
-    // ── World / ECS ───────────────────────────────────────────────────────────
-
     #[test]
     fn ecs_spawn_returns_sequential_ids() {
         let mut w = World::new();
@@ -366,7 +334,7 @@ mod tests {
         let a = w.spawn();
         let b = w.spawn();
         w.despawn(a);
-        let c = w.spawn(); // should reuse a
+        let c = w.spawn();
         assert_eq!(c, a);
         let _ = b;
     }
@@ -398,8 +366,6 @@ mod tests {
         assert!(w.get_attach_context(e).is_none());
     }
 
-    // ── ImsiRegistry ──────────────────────────────────────────────────────────
-
     #[test]
     fn imsi_registry_register_and_lookup() {
         let mut r = ImsiRegistry::new();
@@ -415,8 +381,6 @@ mod tests {
         r.deregister(1);
         assert_eq!(r.lookup(1), None);
     }
-
-    // ── Mme constructors ──────────────────────────────────────────────────────
 
     #[test]
     fn mme_new_is_phase2() {
@@ -437,8 +401,6 @@ mod tests {
         assert_eq!(mme.alloc_ul_teid(), 0x0001_0001);
     }
 
-    // ── HSS ───────────────────────────────────────────────────────────────────
-
     #[test]
     fn hss_provision_and_generate() {
         let mut mme = Mme::new();
@@ -456,4 +418,4 @@ mod tests {
         let mut mme = Mme::new();
         assert!(mme.hss.generate_auth_vector(999).is_none());
     }
-}
+        }
