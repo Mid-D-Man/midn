@@ -6,7 +6,7 @@ use bytes::Bytes;
 /// S1AP message discriminant.
 #[derive(Debug, Clone)]
 pub enum S1apMessage {
-    // ── Connection management ──────────────────────────────────────────────
+    // ── Connection management ─────────────────────────────────────────────
     S1SetupRequest(S1SetupRequest),
     S1SetupResponse(S1SetupResponse),
     S1SetupFailure { cause: S1apCause },
@@ -16,7 +16,7 @@ pub enum S1apMessage {
     DownlinkNasTransport(DownlinkNasTransport),
     UplinkNasTransport(UplinkNasTransport),
 
-    // ── Bearer establishment ───────────────────────────────────────────────
+    // ── Bearer establishment ──────────────────────────────────────────────
     InitialContextSetupRequest(InitialContextSetupRequest),
     /// eNodeB → MME: radio bearer established, contains eNodeB-assigned DL TEID.
     InitialContextSetupResponse(InitialContextSetupResponse),
@@ -24,16 +24,19 @@ pub enum S1apMessage {
 
     // ── Release ───────────────────────────────────────────────────────────
     UeContextReleaseCommand { cause: S1apCause },
-    UeContextReleaseComplete { mme_ue_s1ap_id: u32, enb_ue_s1ap_id: u32 },
+    /// Tuple variant so the handler can receive the struct by value.
+    UeContextReleaseComplete(UeContextReleaseComplete),
 }
+
+// ── S1 Setup ──────────────────────────────────────────────────────────────────
 
 /// S1 Setup Request IEs.
 #[derive(Debug, Clone)]
 pub struct S1SetupRequest {
-    pub global_enb_id:       [u8; 8],
-    pub enb_name:            Option<String>,
-    pub supported_tas:       Vec<SupportedTa>,
-    pub default_paging_drx:  u8,
+    pub global_enb_id:      [u8; 8],
+    pub enb_name:           Option<String>,
+    pub supported_tas:      Vec<SupportedTa>,
+    pub default_paging_drx: u8,
 }
 
 /// Supported Tracking Area in S1 Setup.
@@ -58,6 +61,8 @@ pub struct Gummei {
     pub mme_gid:  u16,
     pub mme_code: u8,
 }
+
+// ── UE context management ─────────────────────────────────────────────────────
 
 /// Initial UE Message IEs.
 #[derive(Debug, Clone)]
@@ -87,37 +92,40 @@ pub struct UplinkNasTransport {
     pub eutran_cgi:     [u8; 7],
 }
 
+// ── Bearer establishment ──────────────────────────────────────────────────────
+
 /// Initial Context Setup Request IEs — sent by MME to establish EPS bearer.
 ///
-/// Carries the AttachAccept NAS PDU (inside `nas_pdu`) and the UPF's UL TEID
-/// (inside `e_rabs_to_setup[*].gtp_teid`). The eNodeB uses the TEID to know
-/// where to send uplink GTP-U packets.
+/// Carries the AttachAccept NAS PDU (in `nas_pdu`) and the UPF UL TEID
+/// (in `e_rabs[*].gtp_teid` as big-endian bytes). The eNodeB uses the TEID
+/// to know where to send uplink GTP-U packets.
 #[derive(Debug, Clone)]
 pub struct InitialContextSetupRequest {
-    pub mme_ue_s1ap_id:   u32,
-    pub enb_ue_s1ap_id:   u32,
-    /// Aggregate Maximum Bit Rate — DL
-    pub ue_ambr_dl:       u64,
-    /// Aggregate Maximum Bit Rate — UL
-    pub ue_ambr_ul:       u64,
+    pub mme_ue_s1ap_id: u32,
+    pub enb_ue_s1ap_id: u32,
     /// E-RABs to establish. Index 0 = default bearer (EPS bearer ID 5).
-    pub e_rabs_to_setup:  Vec<ErabToSetup>,
+    pub e_rabs:         Vec<ErabToSetup>,
     /// NAS PDU to relay to UE (AttachAccept). eNodeB delivers via RRC.
-    pub nas_pdu:          Option<Bytes>,
-    /// Kasme — 256-bit anchor key for AS key derivation.
-    pub security_key:     [u8; 32],
+    pub nas_pdu:        Option<Bytes>,
+    /// Aggregate Maximum Bit Rate — (DL, UL) in bps.
+    pub ue_ambr:        (u64, u64),
+    /// Kasme / security key — 256-bit anchor for AS key derivation.
+    pub security_key:   [u8; 32],
 }
 
 /// E-RAB to set up (included in InitialContextSetupRequest).
 #[derive(Debug, Clone)]
 pub struct ErabToSetup {
-    pub e_rab_id:             u8,
+    /// EPS Bearer ID (5 = default bearer).
+    pub erab_id:              u8,
+    /// QoS Class Identifier.
     pub qci:                  u8,
-    pub alloc_retention_prio: u8,
+    /// UPF/S-GW UL TEID as big-endian bytes — the TEID the UPF expects on
+    /// incoming UL GTP-U packets. Encoded as `[u8; 4]` so eNodeB can read
+    /// it directly from the S1AP PDU without a byte-swap.
+    pub gtp_teid:             [u8; 4],
     /// UPF/S-GW IPv4 transport address — where eNodeB sends UL GTP-U packets.
-    pub transport_addr:       [u8; 4],
-    /// UPF/S-GW UL TEID — the TEID the UPF expects on incoming UL packets.
-    pub gtp_teid:             u32,
+    pub transport_layer_addr: [u8; 4],
 }
 
 /// Initial Context Setup Response IEs — sent by eNodeB after bearer established.
@@ -136,17 +144,27 @@ pub struct InitialContextSetupResponse {
 
 /// E-RAB setup item in Initial Context Setup Response.
 ///
-/// The critical field is `gtp_teid`: this is the DL TEID assigned by the
-/// eNodeB. The UPF must use this TEID when encapsulating downlink packets
-/// destined for this subscriber.
+/// The critical field is `gtp_teid`: the DL TEID assigned by the eNodeB.
+/// The UPF inserts this TEID into GTP-U DL packet headers.
 #[derive(Debug, Clone, Copy)]
 pub struct ErabSetupItem {
     pub e_rab_id: u8,
     /// eNodeB S1-U IPv4 transport address.
-    pub transport_addr: [u8; 4],
-    /// eNodeB-assigned DL TEID — UPF inserts this in GTP-U DL headers.
-    pub gtp_teid: u32,
+    pub transport_layer_addr: [u8; 4],
+    /// eNodeB-assigned DL TEID as big-endian bytes.
+    pub gtp_teid: [u8; 4],
 }
+
+// ── Release ───────────────────────────────────────────────────────────────────
+
+/// UE Context Release Complete — sent by eNodeB after context release.
+#[derive(Debug, Clone)]
+pub struct UeContextReleaseComplete {
+    pub mme_ue_s1ap_id: u32,
+    pub enb_ue_s1ap_id: u32,
+}
+
+// ── Cause ─────────────────────────────────────────────────────────────────────
 
 /// S1AP cause code (simplified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
