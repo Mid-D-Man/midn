@@ -2,8 +2,7 @@
 //! S1AP — S1 Application Protocol (3GPP TS 36.413)
 //!
 //! Control plane between the eNodeB (LTE base station) and the MME.
-//! Transported over SCTP (Stream Control Transmission Protocol) for
-//! reliability and multi-streaming.
+//! Transported over SCTP for reliability and multi-streaming.
 //!
 //! ## Key procedures
 //!
@@ -12,13 +11,22 @@
 //! - **Downlink/Uplink NAS Transport**: ongoing NAS message relay
 //! - **Initial Context Setup**: MME tells eNodeB to establish radio bearer
 //! - **UE Context Release**: bearer teardown on detach/handover
-//!
-//! ## Encoding
-//!
-//! S1AP uses ASN.1 PER (Packed Encoding Rules). Full ASN.1 parsing
-//! is a Phase 2 target. Initial implementation uses hand-rolled
-//! encoding for the critical path messages.
 
 pub mod messages;
 
-pub use messages::S1apMessage;
+pub use messages::{
+    DownlinkNasTransport,
+    ErabSetupItem,
+    ErabToSetup,
+    Gummei,
+    InitialContextSetupRequest,
+    InitialContextSetupResponse,
+    InitialUeMessage,
+    S1SetupRequest,
+    S1SetupResponse,
+    S1apCause,
+    S1apMessage,
+    SupportedTa,
+    UeContextReleaseComplete,
+    UplinkNasTransport,
+};
