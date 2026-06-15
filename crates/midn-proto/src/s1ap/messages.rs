@@ -18,17 +18,14 @@ pub enum S1apMessage {
 
     // ── Bearer establishment ──────────────────────────────────────────────
     InitialContextSetupRequest(InitialContextSetupRequest),
-    /// eNodeB → MME: radio bearer established, contains eNodeB-assigned DL TEID.
     InitialContextSetupResponse(InitialContextSetupResponse),
     InitialContextSetupFailure { cause: S1apCause },
 
     // ── Release ───────────────────────────────────────────────────────────
     UeContextReleaseCommand { cause: S1apCause },
-    /// Tuple variant so the handler can receive the struct by value.
+    /// Tuple variant — handler receives the struct by value.
     UeContextReleaseComplete(UeContextReleaseComplete),
 }
-
-// ── S1 Setup ──────────────────────────────────────────────────────────────────
 
 /// S1 Setup Request IEs.
 #[derive(Debug, Clone)]
@@ -62,8 +59,6 @@ pub struct Gummei {
     pub mme_code: u8,
 }
 
-// ── UE context management ─────────────────────────────────────────────────────
-
 /// Initial UE Message IEs.
 #[derive(Debug, Clone)]
 pub struct InitialUeMessage {
@@ -92,46 +87,41 @@ pub struct UplinkNasTransport {
     pub eutran_cgi:     [u8; 7],
 }
 
-// ── Bearer establishment ──────────────────────────────────────────────────────
-
-/// Initial Context Setup Request IEs — sent by MME to establish EPS bearer.
+/// Initial Context Setup Request IEs.
 ///
-/// Carries the AttachAccept NAS PDU (in `nas_pdu`) and the UPF UL TEID
-/// (in `e_rabs[*].gtp_teid` as big-endian bytes). The eNodeB uses the TEID
-/// to know where to send uplink GTP-U packets.
+/// Field names match what `attach.rs` constructs:
+///   `e_rabs`   — the E-RABs to establish
+///   `ue_ambr`  — (DL, UL) aggregate max bit rate
 #[derive(Debug, Clone)]
 pub struct InitialContextSetupRequest {
     pub mme_ue_s1ap_id: u32,
     pub enb_ue_s1ap_id: u32,
-    /// E-RABs to establish. Index 0 = default bearer (EPS bearer ID 5).
+    /// E-RABs to establish (index 0 = default bearer, EPS bearer ID 5).
     pub e_rabs:         Vec<ErabToSetup>,
     /// NAS PDU to relay to UE (AttachAccept). eNodeB delivers via RRC.
     pub nas_pdu:        Option<Bytes>,
-    /// Aggregate Maximum Bit Rate — (DL, UL) in bps.
+    /// Aggregate Maximum Bit Rate — (DL bps, UL bps).
     pub ue_ambr:        (u64, u64),
     /// Kasme / security key — 256-bit anchor for AS key derivation.
     pub security_key:   [u8; 32],
 }
 
-/// E-RAB to set up (included in InitialContextSetupRequest).
+/// E-RAB to set up (in InitialContextSetupRequest).
+///
+/// Field names match what `attach.rs` constructs.
 #[derive(Debug, Clone)]
 pub struct ErabToSetup {
     /// EPS Bearer ID (5 = default bearer).
-    pub erab_id:              u8,
+    pub erab_id:             u8,
     /// QoS Class Identifier.
-    pub qci:                  u8,
-    /// UPF/S-GW UL TEID as big-endian bytes — the TEID the UPF expects on
-    /// incoming UL GTP-U packets. Encoded as `[u8; 4]` so eNodeB can read
-    /// it directly from the S1AP PDU without a byte-swap.
-    pub gtp_teid:             [u8; 4],
-    /// UPF/S-GW IPv4 transport address — where eNodeB sends UL GTP-U packets.
+    pub qci:                 u8,
+    /// UPF/S-GW UL TEID as big-endian bytes.
+    pub gtp_teid:            [u8; 4],
+    /// UPF/S-GW IPv4 transport address.
     pub transport_layer_addr: [u8; 4],
 }
 
 /// Initial Context Setup Response IEs — sent by eNodeB after bearer established.
-///
-/// Contains the eNodeB-assigned DL TEID (`e_rabs_setup[*].gtp_teid`) which the
-/// UPF needs to encapsulate downlink packets correctly.
 #[derive(Debug, Clone)]
 pub struct InitialContextSetupResponse {
     pub mme_ue_s1ap_id: u32,
@@ -144,27 +134,23 @@ pub struct InitialContextSetupResponse {
 
 /// E-RAB setup item in Initial Context Setup Response.
 ///
-/// The critical field is `gtp_teid`: the DL TEID assigned by the eNodeB.
-/// The UPF inserts this TEID into GTP-U DL packet headers.
+/// `gtp_teid` is big-endian bytes so `state_machine.rs` can call
+/// `u32::from_be_bytes(erab.gtp_teid)` directly.
 #[derive(Debug, Clone, Copy)]
 pub struct ErabSetupItem {
-    pub e_rab_id: u8,
+    pub e_rab_id:             u8,
     /// eNodeB S1-U IPv4 transport address.
     pub transport_layer_addr: [u8; 4],
     /// eNodeB-assigned DL TEID as big-endian bytes.
-    pub gtp_teid: [u8; 4],
+    pub gtp_teid:             [u8; 4],
 }
 
-// ── Release ───────────────────────────────────────────────────────────────────
-
-/// UE Context Release Complete — sent by eNodeB after context release.
+/// UE Context Release Complete IEs.
 #[derive(Debug, Clone)]
 pub struct UeContextReleaseComplete {
     pub mme_ue_s1ap_id: u32,
     pub enb_ue_s1ap_id: u32,
 }
-
-// ── Cause ─────────────────────────────────────────────────────────────────────
 
 /// S1AP cause code (simplified).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
