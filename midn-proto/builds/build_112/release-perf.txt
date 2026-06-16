@@ -1,0 +1,291 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling serde_core v1.0.228
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling thiserror v2.0.18
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling heapless v0.7.17
+   Compiling thiserror-impl v2.0.18
+   Compiling byteorder v1.5.0
+   Compiling hash32 v0.2.1
+   Compiling serde v1.0.228
+   Compiling spin v0.9.8
+   Compiling thiserror v1.0.69
+   Compiling stable_deref_trait v1.2.1
+   Compiling serde_json v1.0.150
+   Compiling cobs v0.3.0
+   Compiling mio v1.2.1
+   Compiling socket2 v0.6.4
+   Compiling thiserror-impl v1.0.69
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.11.1
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:70:5
+   |
+70 |     std::ptr::copy_nonoverlapping(ki_ptr,   ki_buf.as_mut_ptr(),   16);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+  --> crates/midn-auth/src/ffi.rs:41:1
+   |
+41 | / pub unsafe extern "C" fn midn_milenage_generate_vector(
+42 | |     ki_ptr:      *const u8,
+43 | |     opc_ptr:     *const u8,
+44 | |     rand_ptr:    *const u8,
+...  |
+53 | |     ak_star_out: *mut u8,
+54 | | ) -> i32 {
+   | |________^
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+   = note: `#[warn(unsafe_op_in_unsafe_fn)]` (part of `#[warn(rust_2024_compatibility)]`) on by default
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:71:5
+   |
+71 |     std::ptr::copy_nonoverlapping(opc_ptr,  opc_buf.as_mut_ptr(),  16);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:72:5
+   |
+72 |     std::ptr::copy_nonoverlapping(rand_ptr, rand_buf.as_mut_ptr(), 16);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:73:5
+   |
+73 |     std::ptr::copy_nonoverlapping(sqn_ptr,  sqn.as_mut_ptr(),       6);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:74:5
+   |
+74 |     std::ptr::copy_nonoverlapping(amf_ptr,  amf_buf.as_mut_ptr(),   2);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:79:5
+   |
+79 |     std::ptr::copy_nonoverlapping(vec.mac_a.as_ptr(),   mac_a_out,    8);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:80:5
+   |
+80 |     std::ptr::copy_nonoverlapping(vec.mac_s.as_ptr(),   mac_s_out,    8);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:81:5
+   |
+81 |     std::ptr::copy_nonoverlapping(vec.res.as_ptr(),     res_out,      8);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:82:5
+   |
+82 |     std::ptr::copy_nonoverlapping(vec.ck.as_ptr(),      ck_out,      16);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:83:5
+   |
+83 |     std::ptr::copy_nonoverlapping(vec.ik.as_ptr(),      ik_out,      16);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:84:5
+   |
+84 |     std::ptr::copy_nonoverlapping(vec.ak.as_ptr(),      ak_out,       6);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+  --> crates/midn-auth/src/ffi.rs:85:5
+   |
+85 |     std::ptr::copy_nonoverlapping(vec.ak_star.as_ptr(), ak_star_out,  6);
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+   |
+   = note: consult the function's documentation for information on how to avoid undefined behavior
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> crates/midn-auth/src/ffi.rs:112:5
+    |
+112 |     std::ptr::copy_nonoverlapping(ki_ptr, ki_buf.as_mut_ptr(), 16);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> crates/midn-auth/src/ffi.rs:101:1
+    |
+101 | / pub unsafe extern "C" fn midn_milenage_compute_opc(
+102 | |     ki_ptr:  *const u8,
+103 | |     op_ptr:  *const u8,
+104 | |     opc_out: *mut u8,
+105 | | ) -> i32 {
+    | |________^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> crates/midn-auth/src/ffi.rs:113:5
+    |
+113 |     std::ptr::copy_nonoverlapping(op_ptr, op_buf.as_mut_ptr(), 16);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> crates/midn-auth/src/ffi.rs:116:5
+    |
+116 |     std::ptr::copy_nonoverlapping(ctx.opc().0.as_ptr(), opc_out, 16);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> crates/midn-auth/src/ffi.rs:139:5
+    |
+139 |     std::ptr::copy_nonoverlapping(expected_ptr, expected.as_mut_ptr(), 8);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+note: an unsafe function restricts its caller, but its body is safe by default
+   --> crates/midn-auth/src/ffi.rs:129:1
+    |
+129 | / pub unsafe extern "C" fn midn_milenage_verify_res(
+130 | |     expected_ptr: *const u8,
+131 | |     received_ptr: *const u8,
+132 | | ) -> i32 {
+    | |________^
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+warning[E0133]: call to unsafe function `std::ptr::copy_nonoverlapping` is unsafe and requires unsafe block
+   --> crates/midn-auth/src/ffi.rs:140:5
+    |
+140 |     std::ptr::copy_nonoverlapping(received_ptr, received.as_mut_ptr(), 8);
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ call to unsafe function
+    |
+    = note: consult the function's documentation for information on how to avoid undefined behavior
+    = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2024/unsafe-op-in-unsafe-fn.html>
+
+For more information about this error, try `rustc --explain E0133`.
+warning: `midn-auth` (lib) generated 17 warnings (run `cargo fix --lib -p midn-auth` to apply 3 suggestions)
+   Compiling tinytemplate v1.2.1
+   Compiling tokio v1.52.3
+   Compiling postcard v1.1.3
+   Compiling ciborium v0.2.2
+   Compiling criterion v0.5.1
+   Compiling midn-proto v0.1.0 (/home/runner/work/midn/midn/crates/midn-proto)
+    Finished `release` profile [optimized] target(s) in 25.81s
+     Running unittests src/lib.rs (target/release/deps/midn_proto-6414260834acd9d3)
+
+running 28 tests
+test gtp::header::tests::echo_request_is_not_gpdu ... ok
+test gtp::header::tests::new_gpdu_flags_are_standard ... ok
+test gtp::header::tests::parse_gpdu_teid_deadbeef ... ok
+test gtp::header::tests::parse_too_short_returns_none ... ok
+test gtp::header::tests::round_trip_serialization ... ok
+test gtp::parser::tests::parse_echo_request ... ok
+test gtp::parser::tests::parse_empty_returns_none ... ok
+test gtp::parser::tests::parse_gpdu_no_optional_fields ... ok
+test gtp::parser::tests::parse_gpdu_with_sequence_number_flag ... ok
+test gtp::parser::tests::parse_too_short_for_header ... ok
+test nas::codec::tests::attach_accept_with_ip ... ok
+test nas::codec::tests::attach_complete_decode ... ok
+test nas::codec::tests::attach_request_imsi_round_trip ... ok
+test nas::codec::tests::auth_request_round_trip ... ok
+test nas::codec::tests::auth_response_round_trip ... ok
+test nas::codec::tests::decode_rejects_wrong_pd ... ok
+test nas::codec::tests::sec_mode_command_round_trip ... ok
+test nas::codec::tests::security_mode_complete_decode ... ok
+test nas::ie::tests::decode_imsi_rejects_wrong_type ... ok
+test nas::ie::tests::imsi_encode_identity_type_is_imsi ... ok
+test nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits ... ok
+test nas::ie::tests::imsi_encode_produces_8_bytes ... ok
+test nas::ie::tests::imsi_round_trip_standard ... ok
+test nas::ie::tests::imsi_round_trip_with_leading_zeros ... ok
+test nas::ie::tests::lv_round_trip ... ok
+test nas::ie::tests::security_algorithms_round_trip ... ok
+test nas::ie::tests::tlv_round_trip ... ok
+test nas::messages::tests::auth_request_round_trip_fields ... ok
+
+successes:
+
+successes:
+    gtp::header::tests::echo_request_is_not_gpdu
+    gtp::header::tests::new_gpdu_flags_are_standard
+    gtp::header::tests::parse_gpdu_teid_deadbeef
+    gtp::header::tests::parse_too_short_returns_none
+    gtp::header::tests::round_trip_serialization
+    gtp::parser::tests::parse_echo_request
+    gtp::parser::tests::parse_empty_returns_none
+    gtp::parser::tests::parse_gpdu_no_optional_fields
+    gtp::parser::tests::parse_gpdu_with_sequence_number_flag
+    gtp::parser::tests::parse_too_short_for_header
+    nas::codec::tests::attach_accept_with_ip
+    nas::codec::tests::attach_complete_decode
+    nas::codec::tests::attach_request_imsi_round_trip
+    nas::codec::tests::auth_request_round_trip
+    nas::codec::tests::auth_response_round_trip
+    nas::codec::tests::decode_rejects_wrong_pd
+    nas::codec::tests::sec_mode_command_round_trip
+    nas::codec::tests::security_mode_complete_decode
+    nas::ie::tests::decode_imsi_rejects_wrong_type
+    nas::ie::tests::imsi_encode_identity_type_is_imsi
+    nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits
+    nas::ie::tests::imsi_encode_produces_8_bytes
+    nas::ie::tests::imsi_round_trip_standard
+    nas::ie::tests::imsi_round_trip_with_leading_zeros
+    nas::ie::tests::lv_round_trip
+    nas::ie::tests::security_algorithms_round_trip
+    nas::ie::tests::tlv_round_trip
+    nas::messages::tests::auth_request_round_trip_fields
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midn_proto
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
