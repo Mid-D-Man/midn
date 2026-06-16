@@ -1,12 +1,6 @@
 // crates/midn-core/src/mme/state_machine.rs
 //! MME state machine — main `Mme` struct and `process_s1ap` entry point.
 //!
-//! ## ECS model
-//!
-//! Each attached UE maps to an `EntityId` (u32).  Components are stored in
-//! per-type HashMaps inside `World`. The `ImsiRegistry` independently maps
-//! IMSI → EntityId for subscriber lookup.
-//!
 //! ## Phase modes
 //!
 //! | Mode    | Trigger                  | SecModeComplete response          |
@@ -32,17 +26,12 @@ pub struct AttachContext {
     pub imsi:           u64,
     pub enb_ue_s1ap_id: u32,
     pub mme_ue_s1ap_id: u32,
-    /// 128-bit RAND used in the auth challenge.
     pub rand:           [u8; 16],
     /// XRES = f2 output; compared with UE's RES in constant time.
     pub xres:           [u8; 8],
-    /// f3 output — used for deriving Kasme.
     pub ck:             [u8; 16],
-    /// f4 output — used for deriving Kasme.
     pub ik:             [u8; 16],
-    /// SQN used for AUTN.
     pub sqn_used:       [u8; 6],
-    /// UE PDN address (from AttachRequest or allocated by MME).
     pub ue_ip:          [u8; 4],
     /// Uplink GTP-U TEID allocated in SecModeComplete (Phase 3 only).
     pub ul_teid:        Option<u32>,
@@ -112,6 +101,11 @@ impl World {
     pub fn get_tunnel_mut(&mut self, entity: u32) -> Option<&mut TunnelComponent> {
         self.tunnels.get_mut(&entity)
     }
+
+    /// Number of attach contexts (UEs currently mid-attach or attached).
+    pub fn subscriber_count(&self) -> usize {
+        self.attach_contexts.len()
+    }
 }
 
 // ── ImsiRegistry ──────────────────────────────────────────────────────────────
@@ -154,11 +148,11 @@ pub enum UpfEvent {
 // ── Mme ───────────────────────────────────────────────────────────────────────
 
 pub struct Mme {
-    world:        World,
-    registry:     ImsiRegistry,
-    pub hss:      Hss,
-    phase3_upf:   Option<[u8; 4]>,
-    teid_counter: u32,
+    pub(crate) world: World,
+    registry:         ImsiRegistry,
+    pub hss:          Hss,
+    phase3_upf:       Option<[u8; 4]>,
+    teid_counter:     u32,
 }
 
 impl Mme {
@@ -173,7 +167,8 @@ impl Mme {
         }
     }
 
-    /// Phase 3 mode — SecModeComplete → InitialContextSetupRequest + UpfEvent::CreateSession.
+    /// Phase 3 mode — SecModeComplete → InitialContextSetupRequest
+    /// + UpfEvent::CreateSession.
     pub fn with_phase3(mut self, upf_addr: [u8; 4]) -> Self {
         self.phase3_upf = Some(upf_addr);
         self
@@ -185,6 +180,11 @@ impl Mme {
         let t = self.teid_counter;
         self.teid_counter = self.teid_counter.wrapping_add(1);
         t
+    }
+
+    /// Number of active attach contexts (mid-attach + attached subscribers).
+    pub fn subscriber_count(&self) -> usize {
+        self.world.subscriber_count()
     }
 
     /// Main entry point — process one incoming S1AP message.
@@ -285,7 +285,7 @@ impl Mme {
         (vec![], vec![])
     }
 
-    /// Handle `UeContextReleaseComplete` — despawn entity and emit RemoveSession.
+    /// Handle `UeContextReleaseComplete` — despawn entity, emit RemoveSession.
     fn handle_release_complete(
         &mut self,
         msg: midn_proto::s1ap::UeContextReleaseComplete,
@@ -320,6 +320,8 @@ impl Default for Mme {
 mod tests {
     use super::*;
 
+    // ── Unit tests ────────────────────────────────────────────────────────────
+
     #[test]
     fn ecs_spawn_returns_sequential_ids() {
         let mut w = World::new();
@@ -351,6 +353,7 @@ mod tests {
         w.insert_session_state(e, SessionState { imsi: 1, ul_teid: 0x0001_0000 });
         w.insert_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0;4] });
         assert!(w.get_attach_context(e).is_some());
+        assert_eq!(w.subscriber_count(), 1);
     }
 
     #[test]
@@ -364,6 +367,7 @@ mod tests {
         });
         w.despawn(e);
         assert!(w.get_attach_context(e).is_none());
+        assert_eq!(w.subscriber_count(), 0);
     }
 
     #[test]
@@ -418,4 +422,266 @@ mod tests {
         let mut mme = Mme::new();
         assert!(mme.hss.generate_auth_vector(999).is_none());
     }
+
+    // ── Phase 3 integration test ──────────────────────────────────────────────
+    //
+    // Exercises the full LTE EPS-AKA attach sequence in Phase 3 mode:
+    //
+    //   1. InitialUeMessage(AttachRequest)        → AuthenticationRequest
+    //   2. UplinkNas(AuthenticationResponse(RES)) → SecurityModeCommand
+    //   3. UplinkNas(SecurityModeComplete)        → InitialContextSetupRequest
+    //                                               + UpfEvent::CreateSession
+    //   4. InitialContextSetupResponse             → UpfEvent::UpdateBearer
+    //   5. UplinkNas(AttachComplete)               → (silent)
+    //
+    // RES is computed independently from the known K + OPc + RAND extracted
+    // from the AuthRequest, verifying the constant-time XRES comparison path.
+
+    #[tokio::test]
+    async fn phase3_full_attach_procedure() {
+        use midn_auth::{AuthKey, MilenageContext, OpCode};
+        use midn_proto::nas::{
+            decode_nas, encode_attach_request, encode_auth_response,
+            encode_sec_mode_complete, encode_attach_complete, NasPdu,
+        };
+        use midn_proto::s1ap::{
+            ErabSetupItem, InitialContextSetupResponse,
+            InitialUeMessage, S1apMessage, UplinkNasTransport,
+        };
+
+        // Test Set 1 credentials — 3GPP TS 35.208 §4.3.1
+        let k_buf: [u8; 16] = [
+            0x46, 0x5b, 0x5c, 0xe8, 0xb1, 0x99, 0xb4, 0x9f,
+            0xaa, 0x5f, 0x0a, 0x2e, 0xe2, 0x38, 0xa6, 0xbc,
+        ];
+        let opc_buf: [u8; 16] = [
+            0xcd, 0x63, 0xcb, 0x71, 0x95, 0x4a, 0x9f, 0x4e,
+            0x48, 0xa5, 0x99, 0x4e, 0x37, 0xa0, 0x2b, 0xaf,
+        ];
+        let imsi     = 234_15_1234567890_u64;
+        let upf_addr = [127u8, 0, 0, 1];
+        let enb_id   = 0x0001_0001_u32;
+
+        let mut mme = Mme::new().with_phase3(upf_addr);
+        mme.hss.provision(imsi, k_buf, opc_buf);
+
+        // ── Step 1: AttachRequest → AuthenticationRequest ─────────────────────
+
+        let attach_req_nas = encode_attach_request(imsi, 1, 0);
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::InitialUeMessage(InitialUeMessage {
+                enb_ue_s1ap_id: enb_id,
+                nas_pdu:        attach_req_nas,
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+                rrc_cause:      1,
+            })
+        ).await;
+
+        assert_eq!(responses.len(), 1, "step 1: expect DownlinkNasTransport(AuthReq)");
+        assert!(events.is_empty(),   "step 1: no UPF events yet");
+        assert_eq!(mme.subscriber_count(), 1, "step 1: one entity spawned");
+
+        let (mme_ue_id, auth_req_pdu) = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(m) => {
+                (m.mme_ue_s1ap_id, m.nas_pdu.clone())
+            }
+            _ => panic!("step 1: expected DownlinkNasTransport, got {:?}", responses[0]),
+        };
+
+        // The first entity ID is 0 (World counter starts at 0).
+        assert_eq!(mme_ue_id, 0, "step 1: first entity = 0");
+
+        // Decode the AuthenticationRequest and extract RAND.
+        let rand = match decode_nas(&auth_req_pdu).unwrap() {
+            NasPdu::AuthenticationRequest(d) => d.rand,
+            other => panic!("step 1: expected AuthReq, got {:?}", other),
+        };
+
+        // Compute the correct RES independently:
+        //   same K, OPc, RAND from the decoded request, SQN=0 (first call),
+        //   AMF=[0x80, 0x00] (standard simulation value from hss.rs).
+        let ctx = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
+        let av  = ctx.generate_vector(&rand, &[0u8; 6], &[0x80u8, 0x00]);
+
+        // ── Step 2: AuthenticationResponse(RES) → SecurityModeCommand ─────────
+
+        let auth_resp_nas = encode_auth_response(&av.res);
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::UplinkNasTransport(UplinkNasTransport {
+                enb_ue_s1ap_id: enb_id,
+                mme_ue_s1ap_id: mme_ue_id,
+                nas_pdu:        auth_resp_nas,
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+            })
+        ).await;
+
+        assert_eq!(responses.len(), 1, "step 2: expect SecurityModeCommand");
+        assert!(events.is_empty(),   "step 2: no UPF events");
+        assert!(
+            matches!(&responses[0], S1apMessage::DownlinkNasTransport(_)),
+            "step 2: expected DownlinkNasTransport(SecModeCmd)"
+        );
+
+        // ── Step 3: SecurityModeComplete → InitialContextSetupRequest ─────────
+
+        let sec_mode_complete_nas = encode_sec_mode_complete();
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::UplinkNasTransport(UplinkNasTransport {
+                enb_ue_s1ap_id: enb_id,
+                mme_ue_s1ap_id: mme_ue_id,
+                nas_pdu:        sec_mode_complete_nas,
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+            })
+        ).await;
+
+        assert_eq!(responses.len(), 1, "step 3: expect InitialContextSetupRequest");
+        assert_eq!(events.len(),    1, "step 3: expect CreateSession event");
+
+        // Verify ICSR carries the correct UL TEID and UPF transport address.
+        let ul_teid = match &responses[0] {
+            S1apMessage::InitialContextSetupRequest(icsr) => {
+                assert_eq!(icsr.mme_ue_s1ap_id, mme_ue_id);
+                assert_eq!(icsr.enb_ue_s1ap_id, enb_id);
+                assert!(!icsr.e_rabs.is_empty(), "must have at least one E-RAB");
+                let teid = u32::from_be_bytes(icsr.e_rabs[0].gtp_teid);
+                assert_eq!(icsr.e_rabs[0].transport_layer_addr, upf_addr,
+                    "E-RAB transport addr must point at UPF");
+                assert!(icsr.nas_pdu.is_some(), "AttachAccept must be embedded");
+                teid
+            }
+            _ => panic!("step 3: expected InitialContextSetupRequest, got {:?}", responses[0]),
+        };
+
+        // UL TEID starts at 0x0001_0000 (first allocation in Mme).
+        assert_eq!(ul_teid, 0x0001_0000, "step 3: UL TEID = base");
+
+        // Verify CreateSession event fields.
+        match &events[0] {
+            UpfEvent::CreateSession { ul_teid: t, entity_id, imsi: i, qci, .. } => {
+                assert_eq!(*t,         ul_teid,  "CreateSession UL TEID");
+                assert_eq!(*entity_id, mme_ue_id,"CreateSession entity_id");
+                assert_eq!(*i,         imsi,     "CreateSession IMSI");
+                assert_eq!(*qci,       9,        "CreateSession QCI = 9 (default)");
+            }
+            _ => panic!("step 3: expected CreateSession, got {:?}", events[0]),
         }
+
+        // ── Step 4: InitialContextSetupResponse → UpfEvent::UpdateBearer ──────
+
+        let enb_dl_teid  = 0xBEEF_0001_u32;
+        let enb_s1u_addr = [192u8, 168, 1, 100];
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::InitialContextSetupResponse(InitialContextSetupResponse {
+                mme_ue_s1ap_id: mme_ue_id,
+                enb_ue_s1ap_id: enb_id,
+                e_rabs_setup: vec![ErabSetupItem {
+                    e_rab_id:             5,
+                    transport_layer_addr: enb_s1u_addr,
+                    gtp_teid:             enb_dl_teid.to_be_bytes(),
+                }],
+                e_rabs_failed: vec![],
+            })
+        ).await;
+
+        assert!(responses.is_empty(), "step 4: ICSRSP generates no S1AP responses");
+        assert_eq!(events.len(), 1,   "step 4: expect UpdateBearer event");
+
+        match &events[0] {
+            UpfEvent::UpdateBearer { ul_teid: t, dl_teid, enb_addr } => {
+                assert_eq!(*t,       ul_teid,       "UpdateBearer UL TEID");
+                assert_eq!(*dl_teid, enb_dl_teid,   "UpdateBearer DL TEID from eNB");
+                assert_eq!(*enb_addr, enb_s1u_addr, "UpdateBearer eNB S1-U addr");
+            }
+            _ => panic!("step 4: expected UpdateBearer, got {:?}", events[0]),
+        }
+
+        // Tunnel component in ECS world must now carry the real DL TEID.
+        let tunnel = mme.world.tunnels.get(&mme_ue_id).expect("tunnel component must exist");
+        assert_eq!(tunnel.dl_teid,  enb_dl_teid);
+        assert_eq!(tunnel.enb_addr, enb_s1u_addr);
+        assert_eq!(tunnel.ul_teid,  ul_teid);
+
+        // ── Step 5: AttachComplete → subscriber online ────────────────────────
+
+        let attach_complete_nas = encode_attach_complete();
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::UplinkNasTransport(UplinkNasTransport {
+                enb_ue_s1ap_id: enb_id,
+                mme_ue_s1ap_id: mme_ue_id,
+                nas_pdu:        attach_complete_nas,
+                tai:            [0; 5],
+                eutran_cgi:     [0; 7],
+            })
+        ).await;
+
+        assert!(responses.is_empty(), "step 5: AttachComplete is silent (no response)");
+        assert!(events.is_empty(),    "step 5: no UPF events on AttachComplete");
+
+        // Attach context still present — entity live, session established.
+        assert!(mme.world.get_attach_context(mme_ue_id).is_some(),
+            "step 5: entity still active after attach complete");
+        assert_eq!(mme.subscriber_count(), 1, "step 5: one online subscriber");
+
+        // IMSI registry must map to the correct entity.
+        assert_eq!(mme.registry.lookup(imsi), Some(mme_ue_id),
+            "step 5: IMSI registry points at entity");
+    }
+
+    // ── Phase 3 negative path: wrong RES rejected ─────────────────────────────
+
+    #[tokio::test]
+    async fn phase3_wrong_res_rejected() {
+        use midn_proto::nas::encode_attach_request;
+        use midn_proto::nas::encode_auth_response;
+        use midn_proto::s1ap::{InitialUeMessage, S1apMessage, UplinkNasTransport};
+
+        let k_buf: [u8; 16] = [
+            0x46, 0x5b, 0x5c, 0xe8, 0xb1, 0x99, 0xb4, 0x9f,
+            0xaa, 0x5f, 0x0a, 0x2e, 0xe2, 0x38, 0xa6, 0xbc,
+        ];
+        let opc_buf: [u8; 16] = [
+            0xcd, 0x63, 0xcb, 0x71, 0x95, 0x4a, 0x9f, 0x4e,
+            0x48, 0xa5, 0x99, 0x4e, 0x37, 0xa0, 0x2b, 0xaf,
+        ];
+        let imsi = 234_15_0000000001_u64;
+
+        let mut mme = Mme::new().with_phase3([127, 0, 0, 1]);
+        mme.hss.provision(imsi, k_buf, opc_buf);
+
+        // Step 1: attach
+        let (responses, _) = mme.process_s1ap(
+            S1apMessage::InitialUeMessage(InitialUeMessage {
+                enb_ue_s1ap_id: 1,
+                nas_pdu: encode_attach_request(imsi, 1, 0),
+                tai: [0; 5], eutran_cgi: [0; 7], rrc_cause: 1,
+            })
+        ).await;
+        let mme_ue_id = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(m) => m.mme_ue_s1ap_id,
+            _ => panic!(),
+        };
+
+        // Step 2: send a deliberately wrong RES — all 0xAA
+        let wrong_res = [0xAAu8; 8];
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::UplinkNasTransport(UplinkNasTransport {
+                enb_ue_s1ap_id: 1,
+                mme_ue_s1ap_id: mme_ue_id,
+                nas_pdu: encode_auth_response(&wrong_res),
+                tai: [0; 5], eutran_cgi: [0; 7],
+            })
+        ).await;
+
+        // Wrong RES: MME must produce no responses and no events (silent reject).
+        assert!(responses.is_empty(), "wrong RES must produce no S1AP response");
+        assert!(events.is_empty(),    "wrong RES must produce no UPF events");
+    }
+}
