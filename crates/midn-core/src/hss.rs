@@ -2,32 +2,23 @@
 //! In-memory Home Subscriber Server (HSS).
 //!
 //! Stores subscriber credentials (K, OPc, SQN) and generates Milenage
-//! authentication vectors on demand. In production this is replaced by a
-//! Diameter/LDAP HSS — for simulation and testing this in-memory version
-//! provides full EPS-AKA functionality.
+//! authentication vectors on demand.
 //!
-//! ## RAND generation
+//! ## Method summary
 //!
-//! RAND is 128 bits of OS-seeded ChaCha12 entropy from `rand::thread_rng`.
-//! The HSS returns RAND alongside the auth vector so the MME can include it
-//! verbatim in the Authentication Request NAS message.
-//!
-//! ## SQN management
-//!
-//! SQN is held as `u64` and converted to 6-byte big-endian on each call.
-//! It is incremented after every successful `generate_auth_vector`. The
-//! 48-bit ceiling is enforced by masking with `0x0000_FFFF_FFFF_FFFF`.
-//! Resync (AUTS-based SQN recovery) is Phase 2+ scope.
-//!
-//! ## AMF
-//!
-//! Authentication Management Field is fixed at `[0x80, 0x00]` for
-//! simulation (TS 33.102 §6.3.3 leaves the value operator-defined).
+//! | Method               | Bench/caller       | Notes                              |
+//! |----------------------|--------------------|------------------------------------|
+//! | `provision`          | core_bench         | takes `AuthKey` + `OpCode` newtypes|
+//! | `provision_hex`      | core_bench         | hex strings, returns `Result`      |
+//! | `provision_with_op`  | tests              | derives OPc internally             |
+//! | `has_subscriber`     | core_bench         | O(1) existence check               |
+//! | `contains`           | internal tests     | alias kept for compat              |
+//! | `generate_auth_vector` | MME/attach       | returns `HssAuthInfo`              |
 
 use std::collections::HashMap;
 
 use midn_auth::{AuthKey, AuthVector, MilenageContext, OpCode};
-use rand::RngCore;
+use midn_auth::keys::{Amf, Sqn};
 
 // ── HssAuthInfo ───────────────────────────────────────────────────────────────
 
@@ -53,7 +44,6 @@ struct SubscriberRecord {
 
 impl SubscriberRecord {
     fn sqn_bytes(&self) -> [u8; 6] {
-        // u64 is 8 bytes big-endian; SQN uses the lower 6 bytes.
         let b = self.sqn.to_be_bytes();
         [b[2], b[3], b[4], b[5], b[6], b[7]]
     }
@@ -63,7 +53,7 @@ impl SubscriberRecord {
 
 /// In-memory HSS.
 ///
-/// Not internally synchronized — wrap in `Arc<Mutex<Hss>>` for concurrent use.
+/// Not internally synchronised — wrap in `Arc<Mutex<Hss>>` for concurrent use.
 pub struct Hss {
     subscribers: HashMap<u64, SubscriberRecord>,
 }
@@ -76,14 +66,37 @@ impl Hss {
     // ── Provisioning ──────────────────────────────────────────────────────────
 
     /// Add a subscriber from a pre-computed OPc.
-    pub fn provision(&mut self, imsi: u64, k: [u8; 16], opc: [u8; 16]) {
-        let ctx = MilenageContext::new(AuthKey(k), OpCode(opc));
+    ///
+    /// Matches what `core_bench.rs` calls:
+    /// ```ignore
+    /// hss.provision(imsi, AuthKey::from_hex("...")?, OpCode::from_hex("...")?)
+    /// ```
+    pub fn provision(&mut self, imsi: u64, k: AuthKey, opc: OpCode) {
+        let ctx = MilenageContext::new(k, opc);
         self.subscribers.insert(imsi, SubscriberRecord { ctx, sqn: 0 });
     }
 
+    /// Add a subscriber from hex strings — convenience wrapper used by
+    /// `core_bench.rs` and tests.
+    ///
+    /// ```ignore
+    /// hss.provision_hex(imsi, "465b5ce8...", "cd63cb71...")?;
+    /// ```
+    pub fn provision_hex(
+        &mut self,
+        imsi:    u64,
+        k_hex:   &str,
+        opc_hex: &str,
+    ) -> Result<(), hex::FromHexError> {
+        let k   = AuthKey::from_hex(k_hex)?;
+        let opc = OpCode::from_hex(opc_hex)?;
+        self.provision(imsi, k, opc);
+        Ok(())
+    }
+
     /// Add a subscriber from operator OP (OPc = OP ⊕ E_K(OP) derived here).
-    pub fn provision_with_op(&mut self, imsi: u64, k: [u8; 16], op: [u8; 16]) {
-        let ctx = MilenageContext::with_op(AuthKey(k), &op);
+    pub fn provision_with_op(&mut self, imsi: u64, k: AuthKey, op: [u8; 16]) {
+        let ctx = MilenageContext::with_op(k, &op);
         self.subscribers.insert(imsi, SubscriberRecord { ctx, sqn: 0 });
     }
 
@@ -92,9 +105,18 @@ impl Hss {
         self.subscribers.remove(&imsi).is_some()
     }
 
-    /// Check whether a subscriber is provisioned.
-    pub fn contains(&self, imsi: u64) -> bool {
+    /// Return `true` if a subscriber with this IMSI is provisioned.
+    ///
+    /// Used by `core_bench.rs` as `hss.has_subscriber(imsi)`.
+    #[inline]
+    pub fn has_subscriber(&self, imsi: u64) -> bool {
         self.subscribers.contains_key(&imsi)
+    }
+
+    /// Alias for `has_subscriber` — kept for internal test compat.
+    #[inline]
+    pub fn contains(&self, imsi: u64) -> bool {
+        self.has_subscriber(imsi)
     }
 
     // ── Auth vector generation ─────────────────────────────────────────────────
@@ -104,40 +126,32 @@ impl Hss {
     /// Returns `None` if the IMSI is unknown.
     ///
     /// On success:
-    ///   - Generates a fresh 128-bit RAND via OS entropy.
-    ///   - Runs Milenage f1/f1*/f2/f3/f4/f5/f5* with the stored K, OPc, SQN.
-    ///   - Increments the stored SQN.
-    ///   - Returns [`HssAuthInfo`] containing RAND, the full vector, and the
-    ///     SQN bytes used (for AUTN construction by the MME).
+    ///   - Generates a fresh 128-bit RAND via OS entropy (`generate_vector`).
+    ///   - Runs Milenage f1/f1*/f2/f3/f4/f5/f5*.
+    ///   - Increments and masks the stored SQN to 48 bits.
+    ///   - Returns [`HssAuthInfo`] with RAND, the full vector, and the SQN
+    ///     bytes used (caller constructs AUTN = (SQN ⊕ AK) ∥ AMF ∥ MAC-A).
     pub fn generate_auth_vector(&mut self, imsi: u64) -> Option<HssAuthInfo> {
         let sub = self.subscribers.get_mut(&imsi)?;
-
-        // 128-bit random challenge (OS-seeded ChaCha12).
-        let mut rand = [0u8; 16];
-        rand::thread_rng().fill_bytes(&mut rand);
 
         let sqn_used = sub.sqn_bytes();
 
         // AMF fixed at [0x80, 0x00] for simulation.
         // Bit 0 of AMF[0] = 1 signals "UMTS AKA" to the UE per TS 33.102.
-        let amf = [0x80u8, 0x00];
-
-        // Generate the Milenage auth vector.
-        // Fixed: was generate_vector(sqn, Amf::STANDARD) — 2 newtype args.
-        // Now:   generate_vector(&rand, &sqn, &amf)      — 3 raw-slice args.
-        let vector = sub.ctx.generate_vector(&rand, &sqn_used, &amf);
+        let (rand_newtype, vector) = sub.ctx.generate_vector(
+            Sqn::from_bytes(&sqn_used),
+            Amf([0x80, 0x00]),
+        );
 
         // Increment SQN; mask to 48 bits.
         sub.sqn = sub.sqn.wrapping_add(1) & 0x0000_FFFF_FFFF_FFFF;
 
-        Some(HssAuthInfo { rand, vector, sqn_used })
+        Some(HssAuthInfo { rand: rand_newtype.0, vector, sqn_used })
     }
 
-    // ── SQN resync ────────────────────────────────────────────────────────────
+    // ── SQN management ────────────────────────────────────────────────────────
 
     /// Overwrite the stored SQN for `imsi` (used after a resync procedure).
-    ///
-    /// Returns `true` if the subscriber was found and updated.
     pub fn update_sqn(&mut self, imsi: u64, new_sqn: u64) -> bool {
         match self.subscribers.get_mut(&imsi) {
             Some(sub) => {
@@ -166,12 +180,11 @@ mod tests {
 
     fn test_hss() -> Hss {
         let mut hss = Hss::new();
-        // Test Set 1 subscriber — K and OPc from 3GPP TS 35.208 §4.3.1.
-        hss.provision(
+        hss.provision_hex(
             901_700_000_000_001,
-            hex("465b5ce8b199b49faa5f0a2ee238a6bc"),
-            hex("cd63cb71954a9f4e48a5994e37a02baf"),
-        );
+            "465b5ce8b199b49faa5f0a2ee238a6bc",
+            "cd63cb71954a9f4e48a5994e37a02baf",
+        ).expect("valid test hex");
         hss
     }
 
@@ -183,6 +196,20 @@ mod tests {
     }
 
     #[test]
+    fn has_subscriber_matches_contains() {
+        let hss = test_hss();
+        let imsi = 901_700_000_000_001;
+        assert_eq!(hss.has_subscriber(imsi), hss.contains(imsi));
+        assert!(!hss.has_subscriber(12345));
+    }
+
+    #[test]
+    fn provision_hex_rejects_bad_hex() {
+        let mut hss = Hss::new();
+        assert!(hss.provision_hex(1, "notvalidhex!!!", "cd63cb71954a9f4e48a5994e37a02baf").is_err());
+    }
+
+    #[test]
     fn generate_auth_vector_unknown_imsi_returns_none() {
         let mut hss = Hss::new();
         assert!(hss.generate_auth_vector(999).is_none());
@@ -191,16 +218,13 @@ mod tests {
     #[test]
     fn generate_auth_vector_returns_some() {
         let mut hss = test_hss();
-        let info = hss.generate_auth_vector(901_700_000_000_001);
-        assert!(info.is_some());
+        assert!(hss.generate_auth_vector(901_700_000_000_001).is_some());
     }
 
     #[test]
     fn rand_is_16_bytes_nonzero_probable() {
         let mut hss = test_hss();
         let info = hss.generate_auth_vector(901_700_000_000_001).unwrap();
-        // A randomly generated RAND has astronomically low probability of
-        // being all-zero; treat as a sanity check only.
         assert_ne!(info.rand, [0u8; 16]);
     }
 
@@ -220,9 +244,7 @@ mod tests {
         let mut hss = test_hss();
         let imsi = 901_700_000_000_001;
         let info = hss.generate_auth_vector(imsi).unwrap();
-        // SQN was 0 before generation — sqn_used should be [0,0,0,0,0,0].
         assert_eq!(info.sqn_used, [0u8; 6]);
-        // SQN is now 1.
         let info2 = hss.generate_auth_vector(imsi).unwrap();
         assert_eq!(info2.sqn_used, [0, 0, 0, 0, 0, 1]);
     }
@@ -233,7 +255,6 @@ mod tests {
         let imsi = 901_700_000_000_001;
         let a = hss.generate_auth_vector(imsi).unwrap();
         let b = hss.generate_auth_vector(imsi).unwrap();
-        // Statistically guaranteed to differ with overwhelming probability.
         assert_ne!(a.rand, b.rand);
     }
 
@@ -243,7 +264,7 @@ mod tests {
         let imsi = 901_700_000_000_001;
         assert!(hss.deprovision(imsi));
         assert!(!hss.contains(imsi));
-        assert!(!hss.deprovision(imsi)); // second call returns false
+        assert!(!hss.deprovision(imsi));
     }
 
     #[test]
@@ -265,20 +286,23 @@ mod tests {
         let mut hss = Hss::new();
         hss.provision_with_op(
             42,
-            hex("465b5ce8b199b49faa5f0a2ee238a6bc"),
-            hex("cdc202d5123e20f62b6d676ac72cb318"),
+            AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap(),
+            {
+                let mut b = [0u8; 16];
+                hex::decode_to_slice("cdc202d5123e20f62b6d676ac72cb318", &mut b).unwrap();
+                b
+            },
         );
-        let info = hss.generate_auth_vector(42);
-        assert!(info.is_some());
+        assert!(hss.generate_auth_vector(42).is_some());
     }
 
-    fn hex(s: &str) -> [u8; 16] {
-        let digits: Vec<char> = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        let mut arr = [0u8; 16];
-        for (i, chunk) in digits.chunks(2).enumerate() {
-            arr[i] = (chunk[0].to_digit(16).unwrap() as u8) << 4
-                   | (chunk[1].to_digit(16).unwrap() as u8);
-        }
-        arr
+    #[test]
+    fn provision_newtype_api() {
+        let mut hss = Hss::new();
+        let k   = AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap();
+        let opc = OpCode::from_hex("cd63cb71954a9f4e48a5994e37a02baf").unwrap();
+        hss.provision(123, k, opc);
+        assert!(hss.has_subscriber(123));
+        assert!(hss.generate_auth_vector(123).is_some());
     }
 }
