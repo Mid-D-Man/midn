@@ -1,37 +1,19 @@
 // crates/midn-auth/src/milenage.rs
 //! Milenage authentication and key generation — 3GPP TS 35.205/206/207.
 //!
-//! Implements **f1, f1\*, f2, f3, f4, f5, f5\*** using AES-128 (Rijndael) as
-//! the block cipher kernel. The r and c constants follow the TS 35.206 defaults:
+//! Implements **f1, f1\*, f2, f3, f4, f5, f5\*** using AES-128 (Rijndael).
 //!
-//! | Constant | Value      | Role                     |
-//! |----------|------------|--------------------------|
-//! | r1       | 8 bytes    | rotation for f1/f1*      |
-//! | r2       | 0 bytes    | rotation for f2/f5       |
-//! | r3       | 4 bytes    | rotation for f3          |
-//! | r4       | 8 bytes    | rotation for f4          |
-//! | r5       | 12 bytes   | rotation for f5*         |
-//! | c1       | 0x00..00   | XOR constant f1/f1*      |
-//! | c2       | 0x00..01   | XOR constant f2/f5       |
-//! | c3       | 0x00..02   | XOR constant f3          |
-//! | c4       | 0x00..04   | XOR constant f4          |
-//! | c5       | 0x00..08   | XOR constant f5*         |
+//! ## Public API
 //!
-//! ## Types
+//! | Method                  | RAND source    | Purpose                         |
+//! |-------------------------|----------------|---------------------------------|
+//! | `generate_vector`       | OS CSPRNG      | Production path (HSS per attach)|
+//! | `generate_vector_with_rand` | caller    | Deterministic (tests/benches)   |
 //!
-//! `AuthKey` and `OpCode` are defined in `crate::keys` and re-exported here
-//! for ergonomic imports. Do not redefine them in this module.
-//!
-//! ## Performance
-//!
-//! `generate_vector` runs 6 AES-128 block operations. On AES-NI hardware the
-//! gate is < 10 µs; the bench records ~512 ns (~19× under gate).
-//!
-//! ## Reference
-//!
-//! 3GPP TS 35.206 § 3 (algorithm specification)
-//! 3GPP TS 35.207 § 4–6 (implementors' test data, sets 1–6)
-//! 3GPP TS 35.208 § 4.3 (design conformance test data, sets 1–20)
+//! `generate_vector(sqn, amf) -> (Rand, AuthVector)` — the bench measures this
+//! path to capture the full production cost including OS entropy generation.
+//! `generate_vector_with_rand(sqn, amf, rand) -> AuthVector` — eliminates the
+//! getrandom(2) syscall so the bench can isolate pure AES cost.
 
 use aes::{
     Aes128,
@@ -39,13 +21,11 @@ use aes::{
 };
 use subtle::ConstantTimeEq;
 
-// AuthKey and OpCode live in keys.rs — import and re-export so callers can
-// use either `midn_auth::keys::AuthKey` or `midn_auth::milenage::AuthKey`.
 pub use crate::keys::{AuthKey, OpCode};
+use crate::keys::{Amf, Rand, Sqn};
 
 // ── AES-128 ECB helper ────────────────────────────────────────────────────────
 
-/// Single AES-128 ECB block encryption: OUT = E_K(IN).
 #[inline(always)]
 fn aes128(k: &[u8; 16], block: &[u8; 16]) -> [u8; 16] {
     let cipher = Aes128::new(GenericArray::from_slice(k));
@@ -80,9 +60,7 @@ impl AuthVector {
     /// `AUTN = (SQN ⊕ AK) ∥ AMF ∥ MAC-A`.
     pub fn autn(&self, sqn: &[u8; 6], amf: &[u8; 2]) -> [u8; 16] {
         let mut autn = [0u8; 16];
-        for i in 0..6 {
-            autn[i] = sqn[i] ^ self.ak[i];
-        }
+        for i in 0..6 { autn[i] = sqn[i] ^ self.ak[i]; }
         autn[6..8].copy_from_slice(amf);
         autn[8..16].copy_from_slice(&self.mac_a);
         autn
@@ -91,53 +69,70 @@ impl AuthVector {
 
 // ── MilenageContext ───────────────────────────────────────────────────────────
 
-/// Per-subscriber Milenage state — K and OPc.
-///
-/// Construct once at provisioning time; keep in HSS/AuC alongside IMSI+SQN.
-/// Read-only after construction — safe to share behind `Arc`.
 pub struct MilenageContext {
     k:   AuthKey,
     opc: OpCode,
 }
 
 impl MilenageContext {
-    /// Construct from a pre-computed OPc (preferred — OP is never persisted).
-    pub fn new(k: AuthKey, opc: OpCode) -> Self {
-        Self { k, opc }
-    }
+    pub fn new(k: AuthKey, opc: OpCode) -> Self { Self { k, opc } }
 
-    /// Construct from OP, computing OPc = OP ⊕ E_K(OP) internally.
     pub fn with_op(k: AuthKey, op: &[u8; 16]) -> Self {
         let mut opc_bytes = aes128(&k.0, op);
-        for i in 0..16 {
-            opc_bytes[i] ^= op[i];
-        }
+        for i in 0..16 { opc_bytes[i] ^= op[i]; }
         Self { k, opc: OpCode(opc_bytes) }
     }
 
-    /// Expose the stored OPc (for HSS persistence or test inspection).
     #[inline]
-    pub fn opc(&self) -> &OpCode {
-        &self.opc
+    pub fn opc(&self) -> &OpCode { &self.opc }
+
+    // ── Public API ────────────────────────────────────────────────────────────
+
+    /// Full production path — generates a fresh RAND via OS CSPRNG, then runs
+    /// Milenage. This is what the HSS calls for every attach request.
+    ///
+    /// Returns `(rand, auth_vector)` so the caller (HSS) can forward `rand` to
+    /// the MME for inclusion in the Authentication Request NAS message.
+    ///
+    /// Bench gate: `milenage_generate_vector` < 10 µs.
+    #[inline]
+    pub fn generate_vector(&self, sqn: Sqn, amf: Amf) -> (Rand, AuthVector) {
+        let rand_bytes: [u8; 16] = rand::random();
+        let av = self.compute(&rand_bytes, &sqn.to_bytes(), &amf.0);
+        (Rand(rand_bytes), av)
     }
 
-    /// Generate a full authentication vector for one (RAND, SQN, AMF) triple.
+    /// Deterministic path — caller provides RAND.
     ///
-    /// Performs 6 AES-128 block operations — all outputs of f1/f1*/f2/f3/f4/f5/f5*.
-    pub fn generate_vector(
-        &self,
-        rand: &[u8; 16],
-        sqn:  &[u8; 6],
-        amf:  &[u8; 2],
-    ) -> AuthVector {
+    /// Eliminates the getrandom(2) syscall so the bench can measure pure
+    /// AES-128 cost. Also used in tests against 3GPP TS 35.207 test vectors.
+    ///
+    /// Bench gate: `milenage_core_fixed_rand` < 10 µs.
+    #[inline]
+    pub fn generate_vector_with_rand(&self, sqn: Sqn, amf: Amf, rand: Rand) -> AuthVector {
+        self.compute(&rand.0, &sqn.to_bytes(), &amf.0)
+    }
+
+    /// Constant-time RES comparison. Returns `true` iff `received == expected`.
+    ///
+    /// Uses `subtle::ConstantTimeEq` — do NOT replace with `==`.
+    #[inline]
+    pub fn verify_res(expected: &[u8; 8], received: &[u8; 8]) -> bool {
+        bool::from(expected.ct_eq(received))
+    }
+
+    // ── Private implementation ────────────────────────────────────────────────
+
+    /// Raw Milenage computation — 6 AES-128 block operations.
+    /// Called by both public entry points above.
+    #[inline]
+    pub(crate) fn compute(&self, rand: &[u8; 16], sqn: &[u8; 6], amf: &[u8; 2]) -> AuthVector {
         let k   = &self.k.0;
         let opc = &self.opc.0;
 
         // TEMP = E_K(RAND ⊕ OPc)
         let mut buf = [0u8; 16];
-        for i in 0..16 {
-            buf[i] = rand[i] ^ opc[i];
-        }
+        for i in 0..16 { buf[i] = rand[i] ^ opc[i]; }
         let temp = aes128(k, &buf);
 
         // ── f1 and f1* — rot(IN1 ⊕ OPc, r1=8), c1=0 ────────────────────────
@@ -146,12 +141,8 @@ impl MilenageContext {
         in1[6..8].copy_from_slice(amf);
         in1[8..14].copy_from_slice(sqn);
         in1[14..16].copy_from_slice(amf);
-        for i in 0..16 {
-            buf[(i + 8) % 16] = in1[i] ^ opc[i];
-        }
-        for i in 0..16 {
-            buf[i] ^= temp[i];
-        }
+        for i in 0..16 { buf[(i + 8) % 16] = in1[i] ^ opc[i]; }
+        for i in 0..16 { buf[i] ^= temp[i]; }
         let out1 = {
             let mut o = aes128(k, &buf);
             for i in 0..16 { o[i] ^= opc[i]; }
@@ -163,9 +154,7 @@ impl MilenageContext {
         mac_s.copy_from_slice(&out1[8..16]);
 
         // ── f2 (RES) and f5 (AK) — rot=0, c2=0x01 ───────────────────────────
-        for i in 0..16 {
-            buf[i] = temp[i] ^ opc[i];
-        }
+        for i in 0..16 { buf[i] = temp[i] ^ opc[i]; }
         buf[15] ^= 0x01;
         let out2 = {
             let mut o = aes128(k, &buf);
@@ -178,9 +167,7 @@ impl MilenageContext {
         res.copy_from_slice(&out2[8..16]);
 
         // ── f3 (CK) — rot(TEMP ⊕ OPc, r3=4), c3=0x02 ───────────────────────
-        for i in 0..16 {
-            buf[(i + 12) % 16] = temp[i] ^ opc[i];
-        }
+        for i in 0..16 { buf[(i + 12) % 16] = temp[i] ^ opc[i]; }
         buf[15] ^= 0x02;
         let ck = {
             let mut o = aes128(k, &buf);
@@ -189,9 +176,7 @@ impl MilenageContext {
         };
 
         // ── f4 (IK) — rot(TEMP ⊕ OPc, r4=8), c4=0x04 ───────────────────────
-        for i in 0..16 {
-            buf[(i + 8) % 16] = temp[i] ^ opc[i];
-        }
+        for i in 0..16 { buf[(i + 8) % 16] = temp[i] ^ opc[i]; }
         buf[15] ^= 0x04;
         let ik = {
             let mut o = aes128(k, &buf);
@@ -200,9 +185,7 @@ impl MilenageContext {
         };
 
         // ── f5* (AK*) — rot(TEMP ⊕ OPc, r5=12), c5=0x08 ────────────────────
-        for i in 0..16 {
-            buf[(i + 4) % 16] = temp[i] ^ opc[i];
-        }
+        for i in 0..16 { buf[(i + 4) % 16] = temp[i] ^ opc[i]; }
         buf[15] ^= 0x08;
         let out5 = {
             let mut o = aes128(k, &buf);
@@ -214,27 +197,14 @@ impl MilenageContext {
 
         AuthVector { mac_a, mac_s, res, ck, ik, ak, ak_star }
     }
-
-    /// Constant-time comparison of a received RES against the stored XRES.
-    ///
-    /// Returns `true` iff `received == expected`. Uses `subtle::ConstantTimeEq`
-    /// to prevent timing side-channels.
-    #[inline]
-    pub fn verify_res(expected: &[u8; 8], received: &[u8; 8]) -> bool {
-        bool::from(expected.ct_eq(received))
-    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-//
-// Test sets 1–6 from 3GPP TS 35.207 §4–6 / TS 35.208 §4.3.
-// Source: 3GPP TS 35.208 V12.0.0 §4.3.1–4.3.6.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    use crate::keys::{Amf, Rand, Sqn};
 
     fn ctx_opc(k: &str, opc: &str) -> MilenageContext {
         MilenageContext::new(AuthKey(h16(k)), OpCode(h16(opc)))
@@ -246,16 +216,23 @@ mod tests {
     fn h2(s: &str)  -> [u8;  2] { hbytes::< 2>(s) }
 
     fn hbytes<const N: usize>(s: &str) -> [u8; N] {
-        let digits: Vec<char> =
-            s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
-        assert_eq!(digits.len(), N * 2, "hex string wrong length for [u8; {N}]");
+        let digits: Vec<char> = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+        assert_eq!(digits.len(), N * 2);
         let mut arr = [0u8; N];
         for (i, chunk) in digits.chunks(2).enumerate() {
-            let hi = chunk[0].to_digit(16).unwrap() as u8;
-            let lo = chunk[1].to_digit(16).unwrap() as u8;
-            arr[i] = (hi << 4) | lo;
+            arr[i] = (chunk[0].to_digit(16).unwrap() as u8) << 4
+                   | (chunk[1].to_digit(16).unwrap() as u8);
         }
         arr
+    }
+
+    /// Convenience: call generate_vector_with_rand from raw hex strings.
+    fn gv(ctx: &MilenageContext, rand: &str, sqn: &str, amf: &str) -> AuthVector {
+        ctx.generate_vector_with_rand(
+            Sqn::from_bytes(&h6(sqn)),
+            Amf(h2(amf)),
+            Rand(h16(rand)),
+        )
     }
 
     // ── OPc derivation ────────────────────────────────────────────────────────
@@ -309,13 +286,10 @@ mod tests {
 
     #[test]
     fn test_set_1() {
-        let ctx  = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
-                            "cd63cb71954a9f4e48a5994e37a02baf");
-        let av   = ctx.generate_vector(
-            &h16("23553cbe9637a89d218ae64dae47bf35"),
-            &h6("ff9bb4d0b607"),
-            &h2("b9b9"),
-        );
+        let ctx = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
+                          "cd63cb71954a9f4e48a5994e37a02baf");
+        let av  = gv(&ctx, "23553cbe9637a89d218ae64dae47bf35",
+                           "ff9bb4d0b607", "b9b9");
         assert_eq!(av.mac_a,   h8("4a9ffac354dfafb3"),                  "f1  MAC-A");
         assert_eq!(av.mac_s,   h8("01cfaf9ec4e871e9"),                  "f1* MAC-S");
         assert_eq!(av.res,     h8("a54211d5e3ba50bf"),                  "f2  RES");
@@ -325,34 +299,28 @@ mod tests {
         assert_eq!(av.ak_star, h6("451e8beca43b"),                      "f5* AK*");
     }
 
-    // ── Test Set 2 — TS 35.208 §4.3.2 (same inputs/outputs as Set 1) ─────────
+    // ── Test Set 2 ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_set_2() {
         let ctx = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
-                           "cd63cb71954a9f4e48a5994e37a02baf");
-        let av  = ctx.generate_vector(
-            &h16("23553cbe9637a89d218ae64dae47bf35"),
-            &h6("ff9bb4d0b607"),
-            &h2("b9b9"),
-        );
+                          "cd63cb71954a9f4e48a5994e37a02baf");
+        let av  = gv(&ctx, "23553cbe9637a89d218ae64dae47bf35",
+                           "ff9bb4d0b607", "b9b9");
         assert_eq!(av.mac_a,   h8("4a9ffac354dfafb3"));
         assert_eq!(av.res,     h8("a54211d5e3ba50bf"));
         assert_eq!(av.ak,      h6("aa689c648370"));
         assert_eq!(av.ak_star, h6("451e8beca43b"));
     }
 
-    // ── Test Set 3 — TS 35.208 §4.3.3 ────────────────────────────────────────
+    // ── Test Set 3 ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_set_3() {
         let ctx = ctx_opc("fec86ba6eb707ed08905757b1bb44b8f",
-                           "1006020f0a478bf6b699f15c062e42b3");
-        let av  = ctx.generate_vector(
-            &h16("9f7c8d021accf4db213ccff0c7f71a6a"),
-            &h6("9d0277595ffc"),
-            &h2("725c"),
-        );
+                          "1006020f0a478bf6b699f15c062e42b3");
+        let av  = gv(&ctx, "9f7c8d021accf4db213ccff0c7f71a6a",
+                           "9d0277595ffc", "725c");
         assert_eq!(av.mac_a,   h8("9cabc3e99baf7281"),                  "f1  MAC-A");
         assert_eq!(av.mac_s,   h8("95814ba2b3044324"),                  "f1* MAC-S");
         assert_eq!(av.res,     h8("8011c48c0c214ed2"),                  "f2  RES");
@@ -362,17 +330,14 @@ mod tests {
         assert_eq!(av.ak_star, h6("deacdd848cc6"),                      "f5* AK*");
     }
 
-    // ── Test Set 4 — TS 35.208 §4.3.4 ────────────────────────────────────────
+    // ── Test Set 4 ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_set_4() {
         let ctx = ctx_opc("9e5944aea94b81165c82fbf9f32db751",
-                           "a64a507ae1a2a98bb88eb4210135dc87");
-        let av  = ctx.generate_vector(
-            &h16("ce83dbc54ac0274a157c17f80d017bd6"),
-            &h6("0b604a81eca8"),
-            &h2("9e09"),
-        );
+                          "a64a507ae1a2a98bb88eb4210135dc87");
+        let av  = gv(&ctx, "ce83dbc54ac0274a157c17f80d017bd6",
+                           "0b604a81eca8", "9e09");
         assert_eq!(av.mac_a,   h8("74a58220cba84c49"),                  "f1  MAC-A");
         assert_eq!(av.mac_s,   h8("ac2cc74a96871837"),                  "f1* MAC-S");
         assert_eq!(av.res,     h8("f365cd683cd92e96"),                  "f2  RES");
@@ -382,17 +347,14 @@ mod tests {
         assert_eq!(av.ak_star, h6("6085a86c6f63"),                      "f5* AK*");
     }
 
-    // ── Test Set 5 — TS 35.208 §4.3.5 ────────────────────────────────────────
+    // ── Test Set 5 ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_set_5() {
         let ctx = ctx_opc("4ab1deb05ca6ceb051fc98e77d026a84",
-                           "dcf07cbd51855290b92a07a9891e523e");
-        let av  = ctx.generate_vector(
-            &h16("74b0cd6031a1c8339b2b6ce2b8c4a186"),
-            &h6("e880a1b580b6"),
-            &h2("9f07"),
-        );
+                          "dcf07cbd51855290b92a07a9891e523e");
+        let av  = gv(&ctx, "74b0cd6031a1c8339b2b6ce2b8c4a186",
+                           "e880a1b580b6", "9f07");
         assert_eq!(av.mac_a,   h8("49e785dd12626ef2"),                  "f1  MAC-A");
         assert_eq!(av.mac_s,   h8("9e85790336bb3fa2"),                  "f1* MAC-S");
         assert_eq!(av.res,     h8("5860fc1bce351e7e"),                  "f2  RES");
@@ -402,17 +364,14 @@ mod tests {
         assert_eq!(av.ak_star, h6("fe2555e54aa9"),                      "f5* AK*");
     }
 
-    // ── Test Set 6 — TS 35.208 §4.3.6 ────────────────────────────────────────
+    // ── Test Set 6 ────────────────────────────────────────────────────────────
 
     #[test]
     fn test_set_6() {
         let ctx = ctx_opc("6c38a116ac280c454f59332ee35c8c4f",
-                           "3803ef5363b947c6aaa225e58fae3934");
-        let av  = ctx.generate_vector(
-            &h16("ee6466bc96202c5a557abbeff8babf63"),
-            &h6("414b98222181"),
-            &h2("4464"),
-        );
+                          "3803ef5363b947c6aaa225e58fae3934");
+        let av  = gv(&ctx, "ee6466bc96202c5a557abbeff8babf63",
+                           "414b98222181", "4464");
         assert_eq!(av.mac_a,   h8("078adfb488241a57"),                  "f1  MAC-A");
         assert_eq!(av.mac_s,   h8("80246b8d0186bcf1"),                  "f1* MAC-S");
         assert_eq!(av.res,     h8("16c8233f05a0ac28"),                  "f2  RES");
@@ -447,13 +406,11 @@ mod tests {
     #[test]
     fn autn_structure_set1() {
         let ctx = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
-                           "cd63cb71954a9f4e48a5994e37a02baf");
+                          "cd63cb71954a9f4e48a5994e37a02baf");
         let sqn = h6("ff9bb4d0b607");
         let amf = h2("b9b9");
-        let av  = ctx.generate_vector(
-            &h16("23553cbe9637a89d218ae64dae47bf35"),
-            &sqn, &amf,
-        );
+        let av  = gv(&ctx, "23553cbe9637a89d218ae64dae47bf35",
+                     "ff9bb4d0b607", "b9b9");
         let autn = av.autn(&sqn, &amf);
         for i in 0..6 {
             assert_eq!(autn[i], sqn[i] ^ av.ak[i], "AUTN[{i}] = SQN ⊕ AK");
@@ -469,13 +426,42 @@ mod tests {
         let k   = h16("465b5ce8b199b49faa5f0a2ee238a6bc");
         let op  = h16("cdc202d5123e20f62b6d676ac72cb318");
         let opc = h16("cd63cb71954a9f4e48a5994e37a02baf");
-        let rand = h16("23553cbe9637a89d218ae64dae47bf35");
-        let sqn  = h6("ff9bb4d0b607");
-        let amf  = h2("b9b9");
+        let rand = Rand(h16("23553cbe9637a89d218ae64dae47bf35"));
+        let sqn  = Sqn::from_bytes(&h6("ff9bb4d0b607"));
+        let amf  = Amf(h2("b9b9"));
+
         let av_op  = MilenageContext::with_op(AuthKey(k), &op)
-                         .generate_vector(&rand, &sqn, &amf);
+                         .generate_vector_with_rand(sqn, amf, rand);
         let av_opc = MilenageContext::new(AuthKey(k), OpCode(opc))
-                         .generate_vector(&rand, &sqn, &amf);
+                         .generate_vector_with_rand(sqn, amf, rand);
         assert_eq!(av_op, av_opc);
     }
-        }
+
+    // ── generate_vector returns rand ──────────────────────────────────────────
+
+    #[test]
+    fn generate_vector_returns_nonzero_rand_probable() {
+        let ctx = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
+                          "cd63cb71954a9f4e48a5994e37a02baf");
+        let sqn = Sqn::from_bytes(&h6("ff9bb4d0b607"));
+        let amf = Amf(h2("b9b9"));
+        let (rand, _av) = ctx.generate_vector(sqn, amf);
+        // Two calls have astronomically low probability of the same RAND.
+        let (rand2, _)  = ctx.generate_vector(sqn, amf);
+        assert_ne!(rand.0, rand2.0, "consecutive RANDs should differ");
+    }
+
+    #[test]
+    fn generate_vector_and_with_rand_agree() {
+        let ctx = ctx_opc("465b5ce8b199b49faa5f0a2ee238a6bc",
+                          "cd63cb71954a9f4e48a5994e37a02baf");
+        let sqn  = Sqn::from_bytes(&h6("ff9bb4d0b607"));
+        let amf  = Amf(h2("b9b9"));
+        let rand = Rand(h16("23553cbe9637a89d218ae64dae47bf35"));
+
+        let av_with_rand = ctx.generate_vector_with_rand(sqn, amf, rand);
+        // compute directly should match
+        let av_raw = ctx.compute(&rand.0, &sqn.to_bytes(), &amf.0);
+        assert_eq!(av_with_rand, av_raw);
+    }
+    }
