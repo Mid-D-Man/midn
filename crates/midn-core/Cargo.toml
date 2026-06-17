@@ -10,6 +10,7 @@ midn-proto = { path = "../midn-proto" }
 rand       = "0.8"
 thiserror  = "1"
 tracing    = "0.1"
+hex        = "0.4"
 tokio      = { version = "1", features = ["rt", "sync", "macros"] }
 
 [dev-dependencies]
