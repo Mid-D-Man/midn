@@ -1,0 +1,23 @@
+[1m[33mwarning[0m: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+[1m[92m   Compiling[0m midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)
+[1m[91merror[E0432][0m[1m: unresolved import `aya_build`[0m
+  [1m[94m--> [0mcrates/midn-userplane/build.rs:30:9
+   [1m[94m|[0m
+[1m[94m30[0m [1m[94m|[0m     use aya_build::cargo_metadata;
+   [1m[94m|[0m         [1m[91m^^^^^^^^^[0m [1m[91muse of unresolved module or unlinked crate `aya_build`[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mhelp[0m: if you wanted to use a crate named `aya_build`, use `cargo add aya_build` to add it to your `Cargo.toml`
+
+[1m[91merror[E0433][0m[1m: cannot find module or crate `aya_build` in this scope[0m
+  [1m[94m--> [0mcrates/midn-userplane/build.rs:41:5
+   [1m[94m|[0m
+[1m[94m41[0m [1m[94m|[0m     aya_build::build_ebpf_programs(&[ebpf_package])?;
+   [1m[94m|[0m     [1m[91m^^^^^^^^^[0m [1m[91muse of unresolved module or unlinked crate `aya_build`[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mhelp[0m: if you wanted to use a crate named `aya_build`, use `cargo add aya_build` to add it to your `Cargo.toml`
+
+[1mSome errors have detailed explanations: E0432, E0433.[0m
+[1mFor more information about an error, try `rustc --explain E0432`.[0m
+[1m[91merror[0m: could not compile `midn-userplane` (build script) due to 2 previous errors
