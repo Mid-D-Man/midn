@@ -10,11 +10,11 @@ name = "midn_userplane"
 [features]
 default = []
 # Compile and embed the XDP eBPF program at build time.
-# Requires: cargo install bpf-linker
-#           rustup toolchain install nightly --component rust-src
+# Requires: rustup toolchain install nightly --component rust-src
+#           cargo install bpf-linker
 # Build:    cargo build -p midn-userplane --features ebpf
 # Test:     cargo test  -p midn-userplane --features ebpf
-ebpf = ["dep:aya-build"]
+ebpf = []
 
 [dependencies]
 midn-proto = { path = "../midn-proto" }
@@ -29,9 +29,6 @@ aya-log = "0.2"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-
-[build-dependencies]
-aya-build = { version = "0.1", optional = true }
 
 [[bench]]
 name    = "userplane_bench"
