@@ -11,6 +11,12 @@
 #     --midn-all                — test all crates
 #   Auto-detection: changed files under crates/midn-*/ trigger the matching crate.
 #   Workspace-root changes (Cargo.toml, rust-toolchain.toml) trigger all crates.
+#
+# eBPF feature (midn-userplane --features ebpf):
+#   Runs whenever midn-userplane is triggered.
+#   Requires: bpf-linker + nightly with rust-src (installed automatically).
+#   continue-on-error: true — verifier failures don't block the test gate.
+#   Produces midn-userplane-ebpf-test-raw.txt in the artifact.
 
 name: midn-core — Tests
 
@@ -40,7 +46,7 @@ jobs:
       - name: Checkout (for path-based change detection)
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history — required so HEAD~1 always exists
+          fetch-depth: 0
 
       - name: Decide which crates to run
         id: decide
@@ -54,7 +60,6 @@ jobs:
             AUTH=true; PROTO=true; CORE=true; UP=true
 
           else
-            # ── 1. Commit-message / PR-title tokens (explicit override) ────
             MSG="${{ github.event.head_commit.message }}${{ github.event.pull_request.title }}"
             echo "$MSG" | grep -qiE '\-\-midn-all\b'       && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
             echo "$MSG" | grep -qiE '\-\-midn-auth\b'      && AUTH=true  || true
@@ -62,9 +67,6 @@ jobs:
             echo "$MSG" | grep -qiE '\-\-midn-core\b'      && CORE=true  || true
             echo "$MSG" | grep -qiE '\-\-midn-userplane\b' && UP=true    || true
 
-            # ── 2. Path-based auto-detection ──────────────────────────────
-            # push:  diff parent..HEAD  (fetch-depth: 0 guarantees HEAD~1 exists)
-            # PR:    diff base..HEAD    (base sha from event payload)
             if [ "${{ github.event_name }}" = "pull_request" ]; then
               CHANGED=$(git diff --name-only \
                 "${{ github.event.pull_request.base.sha }}" HEAD 2>/dev/null || true)
@@ -77,19 +79,14 @@ jobs:
               echo "$CHANGED"
               echo "---------------------"
 
-              # Each crate: match its directory prefix
-              echo "$CHANGED" | grep -qE '^crates/midn-auth/'              && AUTH=true  || true
-              echo "$CHANGED" | grep -qE '^crates/midn-proto/'             && PROTO=true || true
-              echo "$CHANGED" | grep -qE '^crates/midn-core/'              && CORE=true  || true
-              # midn-userplane but NOT midn-userplane-ebpf (ebpf needs nightly+bpf-linker)
-              # '^crates/midn-userplane[^-]' matches midn-userplane/ but not midn-userplane-ebpf/
-              echo "$CHANGED" | grep -qE '^crates/midn-userplane[^-]'      && UP=true    || true
+              echo "$CHANGED" | grep -qE '^crates/midn-auth/'         && AUTH=true  || true
+              echo "$CHANGED" | grep -qE '^crates/midn-proto/'        && PROTO=true || true
+              echo "$CHANGED" | grep -qE '^crates/midn-core/'         && CORE=true  || true
+              echo "$CHANGED" | grep -qE '^crates/midn-userplane[^-]' && UP=true    || true
 
-              # Top-level bench files
-              echo "$CHANGED" | grep -qE '^benches/auth_bench'             && AUTH=true  || true
-              echo "$CHANGED" | grep -qE '^benches/proto_bench'            && PROTO=true || true
+              echo "$CHANGED" | grep -qE '^benches/auth_bench'        && AUTH=true  || true
+              echo "$CHANGED" | grep -qE '^benches/proto_bench'       && PROTO=true || true
 
-              # Workspace-root changes: run everything
               echo "$CHANGED" | grep -qE \
                 '^Cargo\.toml$|^rust-toolchain\.toml$|^\.github/workflows/midn-test\.yml$' \
                 && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
@@ -118,7 +115,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust stable toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -127,8 +124,35 @@ jobs:
         id: rustver
         run: echo "ver=$(rustc --version)" >> $GITHUB_OUTPUT
 
+      # Install nightly + rust-src for eBPF compilation (userplane only).
+      # bpf-linker is the LLVM-based linker for BPF targets — not in rustup.
+      # Cache the installed binary to avoid recompiling it every run.
+      - name: Install nightly toolchain + rust-src (eBPF)
+        if: needs.parse-trigger.outputs.run_userplane == 'true'
+        run: |
+          rustup toolchain install nightly --component rust-src
+          echo "Nightly: $(rustup run nightly rustc --version)"
+
+      - name: Cache bpf-linker binary
+        if: needs.parse-trigger.outputs.run_userplane == 'true'
+        id: cache-bpf-linker
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/bpf-linker
+          key: bpf-linker-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: bpf-linker-${{ runner.os }}-
+
+      - name: Install bpf-linker
+        if: |
+          needs.parse-trigger.outputs.run_userplane == 'true' &&
+          steps.cache-bpf-linker.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          cargo install bpf-linker
+          echo "bpf-linker: $(bpf-linker --version 2>/dev/null || echo 'installed')"
+
       - name: Cache cargo registry
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/bin/
@@ -159,7 +183,7 @@ jobs:
         continue-on-error: true
         run: cargo clippy -p midn-userplane -- -D warnings
 
-      # ── Build ─────────────────────────────────────────────────────────────────
+      # ── Build (stable, no features) ───────────────────────────────────────────
       - name: Build midn-auth
         if: needs.parse-trigger.outputs.run_auth == 'true'
         run: cargo build -p midn-auth
@@ -175,6 +199,21 @@ jobs:
       - name: Build midn-userplane
         if: needs.parse-trigger.outputs.run_userplane == 'true'
         run: cargo build -p midn-userplane
+
+      # ── Build midn-userplane with eBPF feature ────────────────────────────────
+      # Triggers aya-build → cargo +nightly build -p midn-userplane-ebpf
+      #   --release --target bpfel-unknown-none -Z build-std=core
+      # continue-on-error: verifier/linker issues don't block the main gate.
+      - name: Build midn-userplane [--features ebpf]
+        if: needs.parse-trigger.outputs.run_userplane == 'true'
+        continue-on-error: true
+        id: ebpf_build
+        run: |
+          cargo build -p midn-userplane --features ebpf \
+            2>&1 | tee midn-userplane-ebpf-build.txt
+          echo "UP_EBPF_BUILD_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
+          # Propagate pass/fail for the summary step
+          exit ${PIPESTATUS[0]}
 
       # ── Test — debug (correctness) ────────────────────────────────────────────
       - name: Test midn-auth [DEBUG]
@@ -212,6 +251,21 @@ jobs:
             --color=never --no-fail-fast -- --show-output \
             2>&1 | tee midn-userplane-test-raw.txt
           echo "UP_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      # ── Test midn-userplane with eBPF feature (DEBUG) ─────────────────────────
+      # Same 34 unit tests but with BPF object embedded.
+      # load_xdp() itself is not called by any test (needs CAP_NET_ADMIN).
+      # continue-on-error: eBPF build failures don't fail the test gate.
+      - name: Test midn-userplane [--features ebpf, DEBUG]
+        if: |
+          needs.parse-trigger.outputs.run_userplane == 'true' &&
+          steps.ebpf_build.outcome == 'success'
+        continue-on-error: true
+        run: |
+          cargo test -p midn-userplane --features ebpf \
+            --color=never --no-fail-fast -- --show-output \
+            2>&1 | tee midn-userplane-ebpf-test-raw.txt
+          echo "UP_EBPF_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
 
       # ── Test — release (perf numbers) ─────────────────────────────────────────
       - name: Test midn-auth [RELEASE]
@@ -369,12 +423,12 @@ jobs:
           for CRATE in midn-auth midn-proto midn-core midn-userplane; do
             if [ -f "${CRATE}-test-results.json" ]; then
               cp .github/midn-test-template.html "${CRATE}-test-index.html"
-              sed -i "s/CRATE_PLACEHOLDER/${CRATE}/g"                    "${CRATE}-test-index.html"
-              sed -i "s/BUILD_NUM_PLACEHOLDER/${{ github.run_number }}/g" "${CRATE}-test-index.html"
-              sed -i "s/BRANCH_PLACEHOLDER/${{ github.ref_name }}/g"      "${CRATE}-test-index.html"
-              sed -i "s/COMMIT_PLACEHOLDER/${GITHUB_SHA:0:8}/g"           "${CRATE}-test-index.html"
-              sed -i "s|DATE_PLACEHOLDER|$(date -u)|g"                    "${CRATE}-test-index.html"
-              sed -i "s|RUST_VERSION_PLACEHOLDER|${RUST_VERSION}|g"       "${CRATE}-test-index.html"
+              sed -i "s/CRATE_PLACEHOLDER/${CRATE}/g"                     "${CRATE}-test-index.html"
+              sed -i "s/BUILD_NUM_PLACEHOLDER/${{ github.run_number }}/g"  "${CRATE}-test-index.html"
+              sed -i "s/BRANCH_PLACEHOLDER/${{ github.ref_name }}/g"       "${CRATE}-test-index.html"
+              sed -i "s/COMMIT_PLACEHOLDER/${GITHUB_SHA:0:8}/g"            "${CRATE}-test-index.html"
+              sed -i "s|DATE_PLACEHOLDER|$(date -u)|g"                     "${CRATE}-test-index.html"
+              sed -i "s|RUST_VERSION_PLACEHOLDER|${RUST_VERSION}|g"        "${CRATE}-test-index.html"
             fi
           done
 
@@ -405,6 +459,37 @@ jobs:
             echo ""
             echo "> Debug build (correctness). Release build numbers are in the artifact \`*-test-release-raw.txt\`."
             echo ""
+
+            # eBPF feature build status
+            echo "### eBPF Feature Build"
+            echo ""
+            if [ -f "midn-userplane-ebpf-build.txt" ]; then
+              LAST=$(tail -3 midn-userplane-ebpf-build.txt)
+              if echo "$LAST" | grep -q "^error"; then
+                echo "❌ \`--features ebpf\` build failed (continue-on-error — does not block gate)"
+              else
+                echo "✅ \`--features ebpf\` build succeeded — BPF object embedded"
+              fi
+              echo ""
+              echo "<details><summary>Build tail</summary>"
+              echo ""
+              echo '```'
+              tail -10 midn-userplane-ebpf-build.txt
+              echo '```'
+              echo ""
+              echo "</details>"
+            else
+              echo "⏭ eBPF feature build not triggered this run"
+            fi
+
+            if [ -f "midn-userplane-ebpf-test-raw.txt" ]; then
+              echo ""
+              PASSED=$(grep -c '^\.\.\. ok$' midn-userplane-ebpf-test-raw.txt 2>/dev/null || echo 0)
+              FAILED=$(grep -c '^\.\.\. FAILED$' midn-userplane-ebpf-test-raw.txt 2>/dev/null || echo 0)
+              echo "eBPF feature tests: **${PASSED} passed**, **${FAILED} failed**"
+            fi
+
+            echo ""
             echo "### Release Performance Highlights"
             echo ""
 
@@ -433,7 +518,7 @@ jobs:
                   found_any = True
 
           if not found_any:
-              print("*(No release performance lines found — run with `cargo test --release` locally)*")
+              print("*(No release performance lines found — run benchmarks via Actions → midn-core: Benchmarks)*")
           PYEOF
 
           } >> $GITHUB_STEP_SUMMARY
@@ -448,6 +533,8 @@ jobs:
             *-test-results.json
             *-test-index.html
             *-test-release-raw.txt
+            midn-userplane-ebpf-build.txt
+            midn-userplane-ebpf-test-raw.txt
           retention-days: 14
 
   # ── Deploy to gh-pages ────────────────────────────────────────────────────────
@@ -497,6 +584,11 @@ jobs:
             PERF="deploy/${CRATE}-test-release-raw.txt"
             [ -f "$PERF" ] && cp "$PERF" "$WORK/${CRATE}/builds/build_${BUILD_NUM}/release-perf.txt" || true
           done
+
+          # eBPF build log
+          EBPF_LOG="deploy/midn-userplane-ebpf-build.txt"
+          [ -f "$EBPF_LOG" ] && \
+            cp "$EBPF_LOG" "$WORK/midn-userplane/builds/build_${BUILD_NUM}/ebpf-build.txt" || true
 
           cp .github/midn-ci-dashboard.html "$WORK/index.html"
 
