@@ -1,0 +1,36 @@
+[1m[33mwarning[0m: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+[1m[92m   Compiling[0m midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)
+[1m[33mwarning[0m: midn-userplane@0.1.0: Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…
+[1m[91merror[0m: failed to run custom build command for `midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)`
+
+Caused by:
+  process didn't exit successfully: `/home/runner/work/midn/midn/target/debug/build/midn-userplane-0d1ca8e43c0320e6/build-script-build` (exit status: 1)
+  --- stdout
+  cargo:rerun-if-changed=../midn-userplane-ebpf/src/
+  cargo:rerun-if-changed=build.rs
+  cargo:warning=Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…
+
+  --- stderr
+  [1m[33mwarning[0m: profiles for the non root package will be ignored, specify profiles at the workspace root:
+  package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+  workspace: /home/runner/work/midn/midn/Cargo.toml
+  [1m[92m Downloading[0m crates ...
+  [1m[92m  Downloaded[0m anyhow v1.0.102
+  [1m[92m  Downloaded[0m aya-build v0.1.3
+  [1m[92m  Downloaded[0m aya-ebpf v0.1.1
+  [1m[92m  Downloaded[0m cargo_metadata v0.23.1
+  [1m[92m  Downloaded[0m aya-ebpf-cty v0.2.3
+  [1m[92m  Downloaded[0m proc-macro2-diagnostics v0.10.1
+  [1m[92m  Downloaded[0m aya-log-ebpf-macros v0.1.0
+  [1m[92m  Downloaded[0m camino v1.2.2
+  [1m[92m  Downloaded[0m cargo-platform v0.3.3
+  [1m[92m  Downloaded[0m aya-log-ebpf v0.1.0
+  [1m[92m  Downloaded[0m aya-log-parser v0.1.13
+  [1m[92m  Downloaded[0m aya-ebpf-macros v0.1.2
+  [1m[92m  Downloaded[0m serde_json v1.0.150
+  [1m[92m  Downloaded[0m aya-ebpf-bindings v0.1.2
+  [1m[91merror[0m: "/home/runner/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/Cargo.lock" does not exist, unable to build with the standard library, try:
+          rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+  Error: "midn-userplane-ebpf compilation failed.\nEnsure the following are installed:\n  rustup toolchain install nightly --component rust-src\n  cargo install bpf-linker"
