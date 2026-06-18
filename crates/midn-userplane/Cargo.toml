@@ -1,3 +1,4 @@
+# crates/midn-userplane/Cargo.toml
 [package]
 name    = "midn-userplane"
 version = "0.1.0"
@@ -6,13 +7,21 @@ edition = "2024"
 [lib]
 name = "midn_userplane"
 
+[features]
+default = []
+# Compile and embed the XDP eBPF program at build time.
+# Requires: cargo install bpf-linker
+#           rustup toolchain install nightly --component rust-src
+# Build:    cargo build -p midn-userplane --features ebpf
+# Test:     cargo test  -p midn-userplane --features ebpf
+ebpf = ["dep:aya-build"]
+
 [dependencies]
 midn-proto = { path = "../midn-proto" }
 tokio      = { version = "1", features = ["full"] }
 bytes      = "1.5"
 thiserror  = "1.0"
 tracing    = "0.1"
-# mid-math = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aya     = { version = "0.13", features = ["async_tokio"] }
@@ -22,7 +31,7 @@ aya-log = "0.2"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [build-dependencies]
-# aya-build = "0.1"  # uncomment Phase 3
+aya-build = { version = "0.1", optional = true }
 
 [[bench]]
 name    = "userplane_bench"
