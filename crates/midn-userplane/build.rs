@@ -73,9 +73,9 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
     if !status.success() {
         return Err(
             "midn-userplane-ebpf compilation failed.\n\
-             Ensure the following are installed:\n\
-             \  rustup toolchain install nightly --component rust-src\n\
-             \  cargo install bpf-linker"
+             Ensure the following are installed:\n  \
+             rustup toolchain install nightly --component rust-src\n  \
+             cargo install bpf-linker"
             .into(),
         );
     }
