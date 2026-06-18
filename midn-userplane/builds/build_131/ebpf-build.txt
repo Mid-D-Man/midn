@@ -1,0 +1,19 @@
+[1m[33mwarning[0m: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+[1m[92m   Compiling[0m midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)
+[1m[33mwarning[0m: midn-userplane@0.1.0: Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…
+[1m[91merror[0m: failed to run custom build command for `midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)`
+
+Caused by:
+  process didn't exit successfully: `/home/runner/work/midn/midn/target/debug/build/midn-userplane-0d1ca8e43c0320e6/build-script-build` (exit status: 1)
+  --- stdout
+  cargo:rerun-if-changed=../midn-userplane-ebpf/src/
+  cargo:rerun-if-changed=build.rs
+  cargo:warning=Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…
+
+  --- stderr
+  [1m[91merror[0m: no such command: `+nightly`
+
+  help: invoke `cargo` through `rustup` to handle `+toolchain` directives
+  Error: "midn-userplane-ebpf compilation failed.\nEnsure the following are installed:\n  rustup toolchain install nightly --component rust-src\n  cargo install bpf-linker"
