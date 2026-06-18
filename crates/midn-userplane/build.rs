@@ -47,12 +47,10 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
     // target lock that cargo itself already holds during the build.
     let bpf_target_dir = out_dir.join("bpf-target");
 
-    // Use the same cargo binary that invoked us.
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-
     println!("cargo:warning=Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…");
 
-    let status = Command::new(&cargo)
+    // Explicitly invoke "cargo" to hit the rustup shim so "+nightly" works.
+    let status = Command::new("cargo")
         .args([
             "+nightly",
             "build",
