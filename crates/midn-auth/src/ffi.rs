@@ -40,27 +40,34 @@ pub unsafe extern "C" fn midn_milenage_generate_vector(
     let mut sqn_buf  = [0u8; 6];
     let mut amf_buf  = [0u8; 2];
 
-    std::ptr::copy_nonoverlapping(ki_ptr,   ki_buf.as_mut_ptr(),   16);
-    std::ptr::copy_nonoverlapping(opc_ptr,  opc_buf.as_mut_ptr(),  16);
-    std::ptr::copy_nonoverlapping(rand_ptr, rand_buf.as_mut_ptr(), 16);
-    std::ptr::copy_nonoverlapping(sqn_ptr,  sqn_buf.as_mut_ptr(),   6);
-    std::ptr::copy_nonoverlapping(amf_ptr,  amf_buf.as_mut_ptr(),   2);
+    // SAFETY: caller guarantees pointers are valid for the given lengths,
+    // non-null check above. Edition 2024 requires explicit unsafe blocks
+    // inside unsafe fn bodies.
+    unsafe {
+        std::ptr::copy_nonoverlapping(ki_ptr,   ki_buf.as_mut_ptr(),   16);
+        std::ptr::copy_nonoverlapping(opc_ptr,  opc_buf.as_mut_ptr(),  16);
+        std::ptr::copy_nonoverlapping(rand_ptr, rand_buf.as_mut_ptr(), 16);
+        std::ptr::copy_nonoverlapping(sqn_ptr,  sqn_buf.as_mut_ptr(),   6);
+        std::ptr::copy_nonoverlapping(amf_ptr,  amf_buf.as_mut_ptr(),   2);
+    }
 
     let ctx = MilenageContext::new(AuthKey(ki_buf), OpCode(opc_buf));
-    // FFI already has raw bytes — use generate_vector_with_rand via newtypes.
     let vec = ctx.generate_vector_with_rand(
         Sqn::from_bytes(&sqn_buf),
         Amf(amf_buf),
         Rand(rand_buf),
     );
 
-    std::ptr::copy_nonoverlapping(vec.mac_a.as_ptr(),   mac_a_out,    8);
-    std::ptr::copy_nonoverlapping(vec.mac_s.as_ptr(),   mac_s_out,    8);
-    std::ptr::copy_nonoverlapping(vec.res.as_ptr(),     res_out,      8);
-    std::ptr::copy_nonoverlapping(vec.ck.as_ptr(),      ck_out,      16);
-    std::ptr::copy_nonoverlapping(vec.ik.as_ptr(),      ik_out,      16);
-    std::ptr::copy_nonoverlapping(vec.ak.as_ptr(),      ak_out,       6);
-    std::ptr::copy_nonoverlapping(vec.ak_star.as_ptr(), ak_star_out,  6);
+    // SAFETY: output pointers are valid and non-null (checked above).
+    unsafe {
+        std::ptr::copy_nonoverlapping(vec.mac_a.as_ptr(),   mac_a_out,    8);
+        std::ptr::copy_nonoverlapping(vec.mac_s.as_ptr(),   mac_s_out,    8);
+        std::ptr::copy_nonoverlapping(vec.res.as_ptr(),     res_out,      8);
+        std::ptr::copy_nonoverlapping(vec.ck.as_ptr(),      ck_out,      16);
+        std::ptr::copy_nonoverlapping(vec.ik.as_ptr(),      ik_out,      16);
+        std::ptr::copy_nonoverlapping(vec.ak.as_ptr(),      ak_out,       6);
+        std::ptr::copy_nonoverlapping(vec.ak_star.as_ptr(), ak_star_out,  6);
+    }
 
     0
 }
@@ -76,11 +83,19 @@ pub unsafe extern "C" fn midn_milenage_compute_opc(
 
     let mut ki_buf = [0u8; 16];
     let mut op_buf = [0u8; 16];
-    std::ptr::copy_nonoverlapping(ki_ptr, ki_buf.as_mut_ptr(), 16);
-    std::ptr::copy_nonoverlapping(op_ptr, op_buf.as_mut_ptr(), 16);
+
+    // SAFETY: non-null checked above, caller guarantees 16-byte validity.
+    unsafe {
+        std::ptr::copy_nonoverlapping(ki_ptr, ki_buf.as_mut_ptr(), 16);
+        std::ptr::copy_nonoverlapping(op_ptr, op_buf.as_mut_ptr(), 16);
+    }
 
     let ctx = MilenageContext::with_op(AuthKey(ki_buf), &op_buf);
-    std::ptr::copy_nonoverlapping(ctx.opc().0.as_ptr(), opc_out, 16);
+
+    // SAFETY: opc_out is non-null and valid for 16 bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(ctx.opc().0.as_ptr(), opc_out, 16);
+    }
     0
 }
 
@@ -94,8 +109,12 @@ pub unsafe extern "C" fn midn_milenage_verify_res(
 
     let mut expected = [0u8; 8];
     let mut received = [0u8; 8];
-    std::ptr::copy_nonoverlapping(expected_ptr, expected.as_mut_ptr(), 8);
-    std::ptr::copy_nonoverlapping(received_ptr, received.as_mut_ptr(), 8);
+
+    // SAFETY: non-null checked above, caller guarantees 8-byte validity.
+    unsafe {
+        std::ptr::copy_nonoverlapping(expected_ptr, expected.as_mut_ptr(), 8);
+        std::ptr::copy_nonoverlapping(received_ptr, received.as_mut_ptr(), 8);
+    }
 
     if MilenageContext::verify_res(&expected, &received) { 1 } else { 0 }
-}
+                                      }
