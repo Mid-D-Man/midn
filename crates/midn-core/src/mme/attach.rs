@@ -118,7 +118,7 @@ pub fn start_attach(
 /// Verify the UE's RES against the stored XRES and issue SecurityModeCommand.
 pub fn handle_auth_response(
     world:          &mut World,
-    registry:       &ImsiRegistry,
+    _registry:      &ImsiRegistry,   // carried for future use (e.g. GUTI re-auth lookup)
     enb_ue_s1ap_id: u32,
     mme_ue_s1ap_id: u32,
     nas_pdu:        &[u8],
@@ -148,7 +148,6 @@ pub fn handle_auth_response(
     }
 
     // RES verified — issue SecurityModeCommand (EEA2 + EIA2).
-    // UE capabilities byte 0xF0/0xF0 indicates support for all algorithms.
     let nas = encode_sec_mode_cmd(
         NasEeaAlgorithm::Eea2,
         NasEiaAlgorithm::Eia2,
@@ -166,10 +165,6 @@ pub fn handle_auth_response(
 // ── Step 3: SecurityModeComplete ─────────────────────────────────────────────
 
 /// On SecurityModeComplete, allocate bearer resources and send AttachAccept.
-///
-/// Phase 2: wraps AttachAccept in `DownlinkNasTransport`.
-/// Phase 3: wraps AttachAccept in `InitialContextSetupRequest` with embedded
-///          NAS PDU, and emits `UpfEvent::CreateSession`.
 pub fn handle_security_mode_complete(
     world:           &mut World,
     enb_ue_s1ap_id:  u32,
@@ -187,12 +182,9 @@ pub fn handle_security_mode_complete(
     let imsi   = ctx.imsi;
     let ue_ip  = ctx.ue_ip;
 
-    // Encode AttachAccept NAS PDU (EPS attach result=1, T3412=0x54, no TAI list,
-    // UE IP address, no APN).
     let attach_accept_nas = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
 
     if let Some(_upf_addr) = phase3_upf {
-        // Phase 3: allocate UL TEID, create tunnel component, emit CreateSession.
         let ul_teid = *teid_counter;
         *teid_counter = teid_counter.wrapping_add(1);
 
@@ -203,11 +195,10 @@ pub fn handle_security_mode_complete(
         world.insert_session_state(mme_ue_s1ap_id, SessionState { imsi, ul_teid });
         world.insert_tunnel(mme_ue_s1ap_id, TunnelComponent {
             ul_teid,
-            dl_teid: 0,       // placeholder; filled by handle_icsrsp
-            enb_addr: [0; 4], // placeholder; filled by handle_icsrsp
+            dl_teid: 0,
+            enb_addr: [0; 4],
         });
 
-        // Build InitialContextSetupRequest with AttachAccept embedded as nas_pdu.
         let icsr = S1apMessage::InitialContextSetupRequest(InitialContextSetupRequest {
             enb_ue_s1ap_id,
             mme_ue_s1ap_id,
@@ -233,7 +224,6 @@ pub fn handle_security_mode_complete(
         (vec![icsr], vec![evt])
 
     } else {
-        // Phase 2: wrap AttachAccept in DownlinkNasTransport.
         let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
             enb_ue_s1ap_id,
             mme_ue_s1ap_id,
@@ -263,4 +253,4 @@ fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
     key[..16].copy_from_slice(ck);
     key[16..].copy_from_slice(ik);
     key
-}
+            }
