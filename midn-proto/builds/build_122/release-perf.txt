@@ -1,0 +1,107 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling serde_core v1.0.228
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling thiserror v2.0.18
+   Compiling scopeguard v1.2.0
+   Compiling lock_api v0.4.14
+   Compiling heapless v0.7.17
+   Compiling thiserror-impl v2.0.18
+   Compiling byteorder v1.5.0
+   Compiling hash32 v0.2.1
+   Compiling serde v1.0.228
+   Compiling spin v0.9.8
+   Compiling stable_deref_trait v1.2.1
+   Compiling thiserror v1.0.69
+   Compiling serde_json v1.0.150
+   Compiling cobs v0.3.0
+   Compiling socket2 v0.6.4
+   Compiling mio v1.2.1
+   Compiling thiserror-impl v1.0.69
+   Compiling bytes v1.11.1
+   Compiling pin-project-lite v0.2.17
+   Compiling tokio v1.52.3
+   Compiling tinytemplate v1.2.1
+   Compiling postcard v1.1.3
+   Compiling ciborium v0.2.2
+   Compiling criterion v0.5.1
+   Compiling midn-proto v0.1.0 (/home/runner/work/midn/midn/crates/midn-proto)
+    Finished `release` profile [optimized] target(s) in 25.21s
+     Running unittests src/lib.rs (target/release/deps/midn_proto-6414260834acd9d3)
+
+running 28 tests
+test gtp::header::tests::echo_request_is_not_gpdu ... ok
+test gtp::header::tests::new_gpdu_flags_are_standard ... ok
+test gtp::header::tests::parse_gpdu_teid_deadbeef ... ok
+test gtp::header::tests::parse_too_short_returns_none ... ok
+test gtp::header::tests::round_trip_serialization ... ok
+test gtp::parser::tests::parse_echo_request ... ok
+test gtp::parser::tests::parse_empty_returns_none ... ok
+test gtp::parser::tests::parse_gpdu_no_optional_fields ... ok
+test gtp::parser::tests::parse_gpdu_with_sequence_number_flag ... ok
+test gtp::parser::tests::parse_too_short_for_header ... ok
+test nas::codec::tests::attach_accept_with_ip ... ok
+test nas::codec::tests::attach_complete_decode ... ok
+test nas::codec::tests::attach_request_imsi_round_trip ... ok
+test nas::codec::tests::auth_request_round_trip ... ok
+test nas::codec::tests::auth_response_round_trip ... ok
+test nas::codec::tests::decode_rejects_wrong_pd ... ok
+test nas::codec::tests::sec_mode_command_round_trip ... ok
+test nas::codec::tests::security_mode_complete_decode ... ok
+test nas::ie::tests::decode_imsi_rejects_wrong_type ... ok
+test nas::ie::tests::imsi_encode_identity_type_is_imsi ... ok
+test nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits ... ok
+test nas::ie::tests::imsi_encode_produces_8_bytes ... ok
+test nas::ie::tests::imsi_round_trip_standard ... ok
+test nas::ie::tests::imsi_round_trip_with_leading_zeros ... ok
+test nas::ie::tests::lv_round_trip ... ok
+test nas::ie::tests::security_algorithms_round_trip ... ok
+test nas::ie::tests::tlv_round_trip ... ok
+test nas::messages::tests::auth_request_round_trip_fields ... ok
+
+successes:
+
+successes:
+    gtp::header::tests::echo_request_is_not_gpdu
+    gtp::header::tests::new_gpdu_flags_are_standard
+    gtp::header::tests::parse_gpdu_teid_deadbeef
+    gtp::header::tests::parse_too_short_returns_none
+    gtp::header::tests::round_trip_serialization
+    gtp::parser::tests::parse_echo_request
+    gtp::parser::tests::parse_empty_returns_none
+    gtp::parser::tests::parse_gpdu_no_optional_fields
+    gtp::parser::tests::parse_gpdu_with_sequence_number_flag
+    gtp::parser::tests::parse_too_short_for_header
+    nas::codec::tests::attach_accept_with_ip
+    nas::codec::tests::attach_complete_decode
+    nas::codec::tests::attach_request_imsi_round_trip
+    nas::codec::tests::auth_request_round_trip
+    nas::codec::tests::auth_response_round_trip
+    nas::codec::tests::decode_rejects_wrong_pd
+    nas::codec::tests::sec_mode_command_round_trip
+    nas::codec::tests::security_mode_complete_decode
+    nas::ie::tests::decode_imsi_rejects_wrong_type
+    nas::ie::tests::imsi_encode_identity_type_is_imsi
+    nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits
+    nas::ie::tests::imsi_encode_produces_8_bytes
+    nas::ie::tests::imsi_round_trip_standard
+    nas::ie::tests::imsi_round_trip_with_leading_zeros
+    nas::ie::tests::lv_round_trip
+    nas::ie::tests::security_algorithms_round_trip
+    nas::ie::tests::tlv_round_trip
+    nas::messages::tests::auth_request_round_trip_fields
+
+test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midn_proto
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
