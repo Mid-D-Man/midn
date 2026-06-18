@@ -4,13 +4,20 @@
 //! Default build: emits rerun-if-changed directives only — no eBPF toolchain needed.
 //!
 //! --features ebpf: shells out to
-//!   cargo +nightly build -p midn-userplane-ebpf
+//!   rustup run nightly cargo build -p midn-userplane-ebpf
 //!     --release --target bpfel-unknown-none -Z build-std=core
 //! and copies the resulting ELF to $OUT_DIR/midn_userplane_ebpf.bpf.o
 //! so that loader.rs can embed it via include_bytes!.
 //!
 //! Uses a private --target-dir inside OUT_DIR to avoid cargo re-entrancy
 //! deadlocks (cargo holds workspace locks while running build scripts).
+//!
+//! Root cause of the "+nightly doesn't work" problem:
+//!   Inside a build script, the CARGO env var is set to the absolute path of
+//!   the stable cargo binary — NOT the rustup shim. So `cargo +nightly` passes
+//!   "+nightly" as a literal argument to the stable binary, which ignores it and
+//!   proceeds with stable (whose rust-src component is not installed).
+//!   `rustup run nightly cargo` always works because rustup is the shim manager.
 //!
 //! Prerequisites for --features ebpf:
 //!   rustup toolchain install nightly --component rust-src
@@ -37,7 +44,7 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
 
     // CARGO_MANIFEST_DIR = .../midn/crates/midn-userplane
     // parent             = .../midn/crates
-    // parent.parent      = .../midn   ← workspace root
+    // parent.parent      = .../midn  ← workspace root
     let workspace_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
@@ -49,10 +56,15 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:warning=Compiling midn-userplane-ebpf (nightly, bpfel-unknown-none)…");
 
-    // Explicitly invoke "cargo" to hit the rustup shim so "+nightly" works.
-    let status = Command::new("cargo")
+    // Use `rustup run nightly cargo` rather than `cargo +nightly`.
+    // Inside a build script, CARGO points to the stable binary directly
+    // (not the rustup shim), so `+nightly` would be treated as a literal
+    // argument and ignored — resulting in stable being used and failing
+    // because stable has no rust-src.
+    // `rustup run nightly cargo` always explicitly selects nightly.
+    let status = Command::new("rustup")
         .args([
-            "+nightly",
+            "run", "nightly", "cargo",
             "build",
             "--package",    "midn-userplane-ebpf",
             "--release",
@@ -66,6 +78,9 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
         // into the BPF target — the BPF verifier rejects coverage instrumentation.
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
+        // Unset CARGO so the subprocess resolves cargo from its PATH / rustup,
+        // not the stable binary that the parent build injected.
+        .env_remove("CARGO")
         .status()?;
 
     if !status.success() {
@@ -100,4 +115,4 @@ fn compile_ebpf() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("cargo:warning=BPF object ready: {dst:?}");
     Ok(())
-}
+    }
