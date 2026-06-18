@@ -48,7 +48,8 @@ pub type LoadXdpError = Box<dyn std::error::Error + Send + Sync + 'static>;
 #[cfg(target_os = "linux")]
 pub struct BpfHandle {
     // Keeps the XDP program attached; dropped on UPF shutdown.
-    bpf: aya::Bpf,
+    // aya::Bpf was renamed to aya::Ebpf in aya 0.13.
+    bpf: aya::Ebpf,
 }
 
 /// Non-Linux stub — zero-sized, cannot be constructed; `load_xdp` always errors
@@ -79,7 +80,7 @@ pub async fn load_xdp(_iface: &str) -> Result<BpfHandle, LoadXdpError> {
     {
         // Phase 3.1 — uncomment:
         //
-        // let mut bpf = aya::Bpf::load(BPF_OBJECT)?;
+        // let mut bpf = aya::Ebpf::load(BPF_OBJECT)?;
         // aya_log::BpfLogger::init(&mut bpf)?;
         //
         // let prog: &mut aya::programs::Xdp =
@@ -169,16 +170,6 @@ impl BpfHandle {
     ///
     /// Until this is called, the XDP program reads all-zero MACs from the map
     /// and falls through to `XDP_PASS` (safe: packets handled by userspace).
-    ///
-    /// # Getting the MAC addresses
-    ///
-    /// ```bash
-    /// # gw_mac — ARP/NDP table for the default route next-hop
-    /// ip neigh show $(ip route show default | awk '/default/ {print $3}')
-    ///
-    /// # nic_mac — UPF interface MAC
-    /// ip link show eth0 | awk '/ether/ {print $2}'
-    /// ```
     pub fn set_pdn_gw_config(&mut self, config: &PdnGwConfig) -> Result<(), LoadXdpError> {
         use aya::maps::Array;
         let map_data = self.bpf
@@ -193,4 +184,4 @@ impl BpfHandle {
         );
         Ok(())
     }
-    }
+            }
