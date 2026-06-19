@@ -25,6 +25,16 @@
 //! Octets 3+: IEs
 //! ```
 //!
+//! Protected NAS PDU envelope (see `encode_protected`/`decode_protected`
+//! below, backed by `nas::security::NasSecurityContext`):
+//! ```text
+//! Octet 1     : [security header type, 4 bits] | [protocol discriminator 0x7, 4 bits]
+//! Octets 2-5  : MAC-I (4 bytes)
+//! Octet 6     : NAS sequence number (low-order COUNT byte)
+//! Octets 7+   : payload — a complete plain NAS PDU (octets as above),
+//!               ciphered in place if the negotiated EEA is not Eea0
+//! ```
+//!
 //! ## Spec compliance note
 //!
 //! This implements the critical-path IEs needed for Phase 2. Optional IEs
@@ -37,6 +47,7 @@ use crate::nas::ie::{
     decode_imsi, decode_security_algorithms, encode_imsi, encode_security_algorithms,
     find_tlv, read_lv, write_lv, write_tlv, NasEeaAlgorithm, NasEiaAlgorithm,
 };
+use crate::nas::security::NasSecurityContext;
 
 // ── NAS constants ─────────────────────────────────────────────────────────────
 
@@ -61,6 +72,15 @@ const IEI_GUTI:     u8 = 0x50;
 const IEI_APN:      u8 = 0x28;
 const IEI_PDN_ADDR: u8 = 0x29;
 
+// Security header types (3GPP TS 24.301 Table 9.3.1) — used by the protected
+// envelope below, NOT by `decode_nas` (which only ever sees sht == 0, the
+// inner plain PDU, after `decode_protected` has stripped the envelope).
+pub const SHT_PLAIN:                      u8 = 0;
+pub const SHT_INTEGRITY:                  u8 = 1;
+pub const SHT_INTEGRITY_CIPHERED:         u8 = 2;
+pub const SHT_INTEGRITY_NEW_CTX:          u8 = 3;
+pub const SHT_INTEGRITY_CIPHERED_NEW_CTX: u8 = 4;
+
 // ── Top-level decode ──────────────────────────────────────────────────────────
 
 /// Decoded NAS PDU — the parsed representation of a raw NAS byte buffer.
@@ -77,7 +97,10 @@ pub enum NasPdu {
     DetachAccept,
 }
 
-/// Parse a raw NAS PDU byte buffer.
+/// Parse a raw, PLAIN NAS PDU byte buffer (security header type 0).
+///
+/// Protected envelopes must go through `decode_protected` first to recover
+/// the inner plain bytes — `decode_nas` rejects anything with sht != 0.
 pub fn decode_nas(buf: &[u8]) -> Result<NasPdu> {
     if buf.len() < 2 {
         return Err(ProtoError::TooShort { expected: 2, got: buf.len() });
@@ -453,11 +476,60 @@ pub fn encode_detach_accept() -> Bytes {
     Bytes::from(vec![NAS_PLAIN_HEADER, MT_DETACH_ACCEPT])
 }
 
+// ── Protected NAS envelope ────────────────────────────────────────────────────
+//
+// Generic wrapper/unwrapper for any plain NAS PDU bytes (the output of any
+// `encode_*` function above), backed by `nas::security::NasSecurityContext`.
+// Not yet called from `midn_core::mme` — see security.rs module docs.
+
+/// Wrap an already-built plain NAS message in a protected envelope
+/// (MME → UE direction — uses `NasSecurityContext::protect_downlink`).
+///
+/// `sht` should normally be [`SHT_INTEGRITY_CIPHERED`]; use one of the
+/// `*_NEW_CTX` variants for the first protected message sent immediately
+/// after a new security context is established (TS 24.301 §4.4.3).
+pub fn encode_protected(
+    ctx:         &mut NasSecurityContext,
+    sht:         u8,
+    bearer:      u8,
+    inner_plain: &[u8],
+) -> Bytes {
+    let protected = ctx.protect_downlink(bearer, inner_plain);
+    let mut buf = Vec::with_capacity(6 + protected.payload.len());
+    buf.push((sht << 4) | NAS_EPS_MM_PD);
+    buf.extend_from_slice(&protected.mac_i);
+    buf.push((protected.count & 0xFF) as u8);
+    buf.extend_from_slice(&protected.payload);
+    Bytes::from(buf)
+}
+
+/// Unwrap a protected NAS envelope (UE → MME direction — uses
+/// `NasSecurityContext::unprotect_uplink`).
+///
+/// Returns the inner plain NAS bytes on success — feed those to
+/// [`decode_nas`] to get the actual `NasPdu`. Returns `None` on integrity
+/// failure or a malformed/too-short buffer; never panics on attacker input.
+pub fn decode_protected(
+    ctx:    &mut NasSecurityContext,
+    buf:    &[u8],
+    bearer: u8,
+) -> Option<Vec<u8>> {
+    if buf.len() < 6 { return None; }
+    let sht = (buf[0] >> 4) & 0x0F;
+    if sht == 0 { return None; } // plain — caller should use decode_nas directly
+    let mut mac_i = [0u8; 4];
+    mac_i.copy_from_slice(&buf[1..5]);
+    let seq_byte   = buf[5];
+    let ciphertext = &buf[6..];
+    ctx.unprotect_uplink(bearer, seq_byte, mac_i, ciphertext)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nas::security::{NasSecurityContext, Direction, eea2_apply, eia2_compute_mac, derive_nas_keys, NAS_BEARER};
 
     #[test]
     fn auth_request_round_trip() {
@@ -585,4 +657,102 @@ mod tests {
         let decoded = decode_nas(&encoded).expect("should decode");
         assert!(matches!(decoded, NasPdu::DetachAccept));
     }
+
+    // ── Protected envelope ─────────────────────────────────────────────────────
+
+    #[test]
+    fn encode_protected_envelope_is_well_formed_and_verifiable() {
+        let kasme = [0x33u8; 32];
+        let mut ctx = NasSecurityContext::new(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let inner_plain = encode_attach_accept(1, 0x54, &[], Some([10, 0, 0, 1]), Some("internet"));
+
+        let envelope = encode_protected(&mut ctx, SHT_INTEGRITY_CIPHERED, NAS_BEARER, &inner_plain);
+
+        // Header byte: sht in high nibble, PD in low nibble.
+        assert_eq!((envelope[0] >> 4) & 0x0F, SHT_INTEGRITY_CIPHERED);
+        assert_eq!(envelope[0] & 0x0F, NAS_EPS_MM_PD);
+        // Sequence byte = COUNT (first message, COUNT = 0).
+        assert_eq!(envelope[5], 0);
+
+        // Independently verify + decrypt using the same derived keys and Downlink direction.
+        let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let mac_i: [u8; 4]    = envelope[1..5].try_into().unwrap();
+        let ciphertext        = &envelope[6..];
+        assert!(crate::nas::security::eia2_verify_mac(
+            &k_int, 0, NAS_BEARER, Direction::Downlink, ciphertext, &mac_i,
+        ));
+        let mut recovered = ciphertext.to_vec();
+        eea2_apply(&k_enc, 0, NAS_BEARER, Direction::Downlink, &mut recovered);
+        assert_eq!(recovered, inner_plain.to_vec());
+    }
+
+    #[test]
+    fn decode_protected_recovers_inner_plain_nas_pdu() {
+        let kasme = [0x44u8; 32];
+        let mut ctx = NasSecurityContext::new(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let inner_plain = encode_auth_response(&[0xA5, 0x42, 0x11, 0xD5, 0xE3, 0xBA, 0x50, 0xBF]);
+
+        // Build a "UE-sent" envelope by hand: same keys, Uplink direction.
+        let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let count = 0u32;
+        let mut ciphertext = inner_plain.to_vec();
+        eea2_apply(&k_enc, count, NAS_BEARER, Direction::Uplink, &mut ciphertext);
+        let mac_i = eia2_compute_mac(&k_int, count, NAS_BEARER, Direction::Uplink, &ciphertext);
+
+        let mut envelope = vec![(SHT_INTEGRITY_CIPHERED << 4) | NAS_EPS_MM_PD];
+        envelope.extend_from_slice(&mac_i);
+        envelope.push(count as u8);
+        envelope.extend_from_slice(&ciphertext);
+
+        let recovered = decode_protected(&mut ctx, &envelope, NAS_BEARER)
+            .expect("valid envelope should decode");
+        assert_eq!(recovered, inner_plain.to_vec());
+
+        // And it parses as a real NasPdu once unwrapped.
+        match decode_nas(&recovered).unwrap() {
+            NasPdu::AuthenticationResponse(d) => {
+                assert_eq!(d.res, [0xA5, 0x42, 0x11, 0xD5, 0xE3, 0xBA, 0x50, 0xBF]);
             }
+            other => panic!("wrong inner PDU type: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decode_protected_rejects_tampered_envelope() {
+        let kasme = [0x66u8; 32];
+        let mut ctx = NasSecurityContext::new(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let inner_plain = encode_sec_mode_complete();
+
+        let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        let mut ciphertext = inner_plain.to_vec();
+        eea2_apply(&k_enc, 0, NAS_BEARER, Direction::Uplink, &mut ciphertext);
+        let mac_i = eia2_compute_mac(&k_int, 0, NAS_BEARER, Direction::Uplink, &ciphertext);
+
+        let mut envelope = vec![(SHT_INTEGRITY_CIPHERED << 4) | NAS_EPS_MM_PD];
+        envelope.extend_from_slice(&mac_i);
+        envelope.push(0u8);
+        envelope.extend_from_slice(&ciphertext);
+
+        // Flip a ciphertext bit — MAC should no longer verify.
+        let last = envelope.len() - 1;
+        envelope[last] ^= 0x01;
+
+        assert!(decode_protected(&mut ctx, &envelope, NAS_BEARER).is_none());
+    }
+
+    #[test]
+    fn decode_protected_rejects_too_short_buffer() {
+        let kasme = [0x88u8; 32];
+        let mut ctx = NasSecurityContext::new(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        assert!(decode_protected(&mut ctx, &[0x27, 0x00], NAS_BEARER).is_none());
+    }
+
+    #[test]
+    fn decode_protected_rejects_plain_sht() {
+        let kasme = [0x11u8; 32];
+        let mut ctx = NasSecurityContext::new(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+        // sht = 0 in the high nibble — decode_protected should refuse to touch it.
+        let buf = [NAS_EPS_MM_PD, 0, 0, 0, 0, 0, 0xAA];
+        assert!(decode_protected(&mut ctx, &buf, NAS_BEARER).is_none());
+    }
+        }
