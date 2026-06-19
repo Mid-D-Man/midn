@@ -12,6 +12,8 @@
 //! UE → MME : SecurityModeComplete
 //! MME → UE : AttachAccept
 //! UE → MME : AttachComplete
+//! UE → MME : DetachRequest
+//! MME → UE : DetachAccept
 //! ```
 //!
 //! ## Wire format
@@ -46,6 +48,7 @@ pub const MT_ATTACH_REQUEST:          u8 = 0x41;
 pub const MT_ATTACH_ACCEPT:           u8 = 0x42;
 pub const MT_ATTACH_COMPLETE:         u8 = 0x43;
 pub const MT_DETACH_REQUEST:          u8 = 0x45;
+pub const MT_DETACH_ACCEPT:           u8 = 0x46;
 pub const MT_AUTHENTICATION_REQUEST:  u8 = 0x52;
 pub const MT_AUTHENTICATION_RESPONSE: u8 = 0x53;
 pub const MT_AUTHENTICATION_REJECT:   u8 = 0x54;
@@ -70,6 +73,8 @@ pub enum NasPdu {
     SecurityModeComplete,
     AttachAccept(DecodedAttachAccept),
     AttachComplete,
+    DetachRequest(DecodedDetachRequest),
+    DetachAccept,
 }
 
 /// Parse a raw NAS PDU byte buffer.
@@ -97,6 +102,8 @@ pub fn decode_nas(buf: &[u8]) -> Result<NasPdu> {
         MT_SECURITY_MODE_COMPLETE  => Ok(NasPdu::SecurityModeComplete),
         MT_ATTACH_ACCEPT           => decode_attach_accept(body),
         MT_ATTACH_COMPLETE         => Ok(NasPdu::AttachComplete),
+        MT_DETACH_REQUEST          => decode_detach_request(body),
+        MT_DETACH_ACCEPT           => Ok(NasPdu::DetachAccept),
         other => Err(ProtoError::UnknownGtpMsgType(other)),
     }
 }
@@ -386,6 +393,66 @@ pub fn encode_attach_complete() -> Bytes {
     Bytes::from(vec![NAS_PLAIN_HEADER, MT_ATTACH_COMPLETE])
 }
 
+// ── Detach Request / Accept ───────────────────────────────────────────────────
+//
+// Models the UE-initiated detach procedure (3GPP TS 24.301 Section 5.5.2.2).
+// Network-initiated detach is not driven via NAS in this simulation — the MME
+// drives that path directly through S1AP UeContextReleaseCommand instead (see
+// midn_core::mme::detach). Both paths converge on the same teardown code.
+//
+// Simplification: real 3GPP defines distinct message type values for
+// UE-originating vs network-originating detach request/accept. This
+// simulation only models the UE-originating direction, so a single pair of
+// constants (MT_DETACH_REQUEST / MT_DETACH_ACCEPT) covers it.
+
+/// Decoded fields from a NAS Detach Request (UE → MME).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodedDetachRequest {
+    /// Detach type, 3 bits — 1=EPS detach, 2=IMSI detach, 3=combined, etc.
+    /// The simulation doesn't branch on this beyond carrying it through.
+    pub detach_type: u8,
+    /// Switch-off flag — true if the UE is powering down. When true the MME
+    /// skips sending DetachAccept, since the UE won't process it.
+    pub switch_off:  bool,
+    pub nas_ksi:     u8,
+}
+
+fn decode_detach_request(body: &[u8]) -> Result<NasPdu> {
+    if body.is_empty() {
+        return Err(ProtoError::TooShort { expected: 1, got: 0 });
+    }
+    // Octet 3: [NAS KSI (3b, high)] | [switch-off (1b)] | [detach type (3b, low)]
+    let byte        = body[0];
+    let detach_type = byte & 0x07;
+    let switch_off  = (byte >> 3) & 0x01 != 0;
+    let nas_ksi     = (byte >> 4) & 0x07;
+    // Mobile identity (GUTI, LV-encoded) follows but is unused here — the
+    // entity is resolved via mme_ue_s1ap_id at the S1AP layer, not the NAS
+    // identity IE. Bytes accepted for wire realism, then ignored.
+    Ok(NasPdu::DetachRequest(DecodedDetachRequest { detach_type, switch_off, nas_ksi }))
+}
+
+/// Encode a NAS Detach Request (used by mock UE in tests).
+pub fn encode_detach_request(
+    detach_type: u8,
+    switch_off:  bool,
+    nas_ksi:     u8,
+    guti:        &[u8; 10],
+) -> Bytes {
+    let mut buf = vec![NAS_PLAIN_HEADER, MT_DETACH_REQUEST];
+    let byte = ((nas_ksi & 0x07) << 4) | (((switch_off as u8) & 0x01) << 3) | (detach_type & 0x07);
+    buf.push(byte);
+    write_lv(&mut buf, guti); // Mobile identity (GUTI) — LV, for wire realism
+    Bytes::from(buf)
+}
+
+/// Encode a NAS Detach Accept (MME → UE). No IEs — header only.
+///
+/// Not sent for switch-off detaches (the UE has already powered down).
+pub fn encode_detach_accept() -> Bytes {
+    Bytes::from(vec![NAS_PLAIN_HEADER, MT_DETACH_ACCEPT])
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -485,4 +552,37 @@ mod tests {
         let bad = [0x05u8, 0x52, 0x00];
         assert!(decode_nas(&bad).is_err());
     }
-}
+
+    #[test]
+    fn detach_request_round_trip_normal() {
+        let guti = [0xABu8; 10];
+        let encoded = encode_detach_request(1, false, 5, &guti);
+        let decoded = decode_nas(&encoded).expect("should decode");
+        match decoded {
+            NasPdu::DetachRequest(d) => {
+                assert_eq!(d.detach_type, 1);
+                assert!(!d.switch_off);
+                assert_eq!(d.nas_ksi, 5);
+            }
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn detach_request_switch_off_flag_round_trips() {
+        let guti = [0u8; 10];
+        let encoded = encode_detach_request(1, true, 0, &guti);
+        let decoded = decode_nas(&encoded).expect("should decode");
+        match decoded {
+            NasPdu::DetachRequest(d) => assert!(d.switch_off),
+            _ => panic!("wrong message type"),
+        }
+    }
+
+    #[test]
+    fn detach_accept_decode() {
+        let encoded = encode_detach_accept();
+        let decoded = decode_nas(&encoded).expect("should decode");
+        assert!(matches!(decoded, NasPdu::DetachAccept));
+    }
+            }
