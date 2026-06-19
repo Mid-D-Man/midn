@@ -23,11 +23,20 @@
 //!   → send AttachAccept (NAS) + InitialContextSetupRequest (S1AP)
 //!   → UE sends AttachComplete → subscriber online
 //! ```
-
-
-//! MME — Mobility Management Entity (3GPP TS 23.401 / 36.413)
+//!
+//! ## Subscriber teardown — two triggers, one path
+//!
+//! ```text
+//! Network-initiated:  (anything) → MME → S1AP UeContextReleaseCommand
+//! UE-initiated:        UE → NAS DetachRequest → mme::detach → S1AP UeContextReleaseCommand
+//! ```
+//!
+//! Both converge on `UeContextReleaseComplete`, which is the only place that
+//! actually despawns the entity, deregisters the IMSI, releases the TEID back
+//! to `TeidAllocator`, and emits `UpfEvent::RemoveSession`.
 
 pub mod attach;
+pub mod detach;
 pub mod state_machine;
 
-pub use state_machine::{Mme, UpfEvent};
+pub use state_machine::{Mme, TeidAllocator, UpfEvent};
