@@ -56,7 +56,10 @@
 //! add GTP-U headers, and XDP_REDIRECT to the eNodeB-facing interface.
 //! Out of scope until Phase 3.2.
 
-use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
+// `EbpfContext` provides `.as_ptr()` / `.data()` / `.data_end()` on XdpContext.
+// Without this import, the compiler can see the trait is implemented for
+// XdpContext but won't let you call its methods (E0599).
+use aya_ebpf::{bindings::xdp_action, programs::XdpContext, EbpfContext};
 
 use crate::maps::{PdnGwConfig, XdpRouteEntry, PDN_GW_CONFIG, TEID_TO_ROUTE};
 
