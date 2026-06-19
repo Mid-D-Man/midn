@@ -1,3 +1,4 @@
+# crates/midn-proto/Cargo.toml
 [package]
 name = "midn-proto"
 version = "0.1.0"
@@ -13,6 +14,15 @@ postcard  = { version = "1.0", features = ["alloc"] }
 tokio     = { version = "1", features = ["net", "sync", "io-util"] }
 bytes     = "1.5"
 thiserror = "1.0"
+
+# NAS security (EEA2/EIA2) — crates/midn-proto/src/nas/security.rs
+aes     = { version = "0.8", features = ["zeroize"] }   # AES-128 block cipher core
+ctr     = "0.9"                                          # CTR mode (128-EEA2)
+cmac    = "0.7"                                          # AES-CMAC (128-EIA2)
+hmac    = "0.12"                                         # HMAC-SHA-256 (TS 33.401 Annex A.7 KDF)
+sha2    = "0.10"
+subtle  = "2.5"                                          # constant-time MAC-I verification (Rule 1)
+zeroize = { version = "1.8", features = ["derive"] }     # wipe NAS session keys on drop
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
