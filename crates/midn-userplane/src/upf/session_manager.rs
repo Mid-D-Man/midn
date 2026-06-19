@@ -27,6 +27,16 @@
 //!     → remove_session(ul_teid)
 //! ```
 //!
+//! ## TEID free list
+//!
+//! `remove_session` pushes the freed `ul_teid` onto an internal free list;
+//! `alloc_ul_teid` (used only by the internal `create_session` path) pops it
+//! before advancing the counter. `create_session_with_teid` always uses the
+//! externally-provided TEID regardless of free-list state — the MME owns
+//! that allocator independently (see `midn_core::mme::state_machine::TeidAllocator`).
+//! This free list only matters for standalone UPF operation without MME
+//! coordination.
+//!
 //! ## BPF fast-path wiring
 //!
 //! Call `set_bpf_handle(bpf)` at UPF startup after `load_xdp` and
@@ -62,22 +72,28 @@ const INITIAL_UL_TEID: u32 = 0x0001_0000;
 
 /// Manages all active user-plane sessions for one UPF instance.
 pub struct SessionManager {
-    next_ul_teid: u32,
-    routing:      Arc<Mutex<RoutingTable>>,
+    next_ul_teid:  u32,
+    /// TEIDs returned by `remove_session`, reused by `alloc_ul_teid` before
+    /// the counter advances. Only affects the internal `create_session` path —
+    /// `create_session_with_teid` always uses the externally-provided TEID
+    /// regardless of free-list state.
+    free_ul_teids: Vec<u32>,
+    routing:       Arc<Mutex<RoutingTable>>,
     /// ul_teid → session record
-    sessions:     HashMap<u32, UserPlaneSession>,
+    sessions:      HashMap<u32, UserPlaneSession>,
     /// Loaded XDP program + BPF map handle.
     /// None until `set_bpf_handle` is called (always None on non-Linux).
-    bpf:          Option<BpfHandle>,
+    bpf:           Option<BpfHandle>,
 }
 
 impl SessionManager {
     pub fn new() -> Self {
         Self {
-            next_ul_teid: INITIAL_UL_TEID,
-            routing:      Arc::new(Mutex::new(RoutingTable::new())),
-            sessions:     HashMap::with_capacity(1024),
-            bpf:          None,
+            next_ul_teid:  INITIAL_UL_TEID,
+            free_ul_teids: Vec::with_capacity(64),
+            routing:       Arc::new(Mutex::new(RoutingTable::new())),
+            sessions:      HashMap::with_capacity(1024),
+            bpf:           None,
         }
     }
 
@@ -260,7 +276,9 @@ impl SessionManager {
     /// BPF: removes the entry from `TEID_TO_ROUTE`. After this, UL packets for
     /// this TEID return `XDP_PASS` and are handled (or dropped) by userspace.
     ///
-    /// Returns the session record for billing/audit purposes.
+    /// The freed `ul_teid` goes back into the free list so a future
+    /// `create_session` call can reuse it instead of growing the counter
+    /// forever. Returns the session record for billing/audit purposes.
     pub fn remove_session(&mut self, ul_teid: u32) -> Option<UserPlaneSession> {
         self.routing.lock().unwrap().remove(ul_teid);
 
@@ -275,17 +293,23 @@ impl SessionManager {
             }
         }
 
-        if let Some(s) = self.sessions.remove(&ul_teid) {
-            tracing::info!(
-                imsi     = s.imsi,
-                ul_teid,
-                bytes_ul = s.bytes_ul,
-                bytes_dl = s.bytes_dl,
-                "User-plane session removed"
-            );
-            Some(s)
-        } else {
-            None
+        let removed = self.sessions.remove(&ul_teid);
+        if removed.is_some() {
+            self.free_ul_teids.push(ul_teid);
+        }
+
+        match removed {
+            Some(s) => {
+                tracing::info!(
+                    imsi     = s.imsi,
+                    ul_teid,
+                    bytes_ul = s.bytes_ul,
+                    bytes_dl = s.bytes_dl,
+                    "User-plane session removed — TEID recycled"
+                );
+                Some(s)
+            }
+            None => None,
         }
     }
 
@@ -324,6 +348,11 @@ impl SessionManager {
         self.sessions.values().map(|s| s.bytes_dl).sum()
     }
 
+    /// Number of TEIDs currently available for reuse by `create_session`.
+    pub fn free_teid_count(&self) -> usize {
+        self.free_ul_teids.len()
+    }
+
     // ── Internal ──────────────────────────────────────────────────────────────
 
     fn install(
@@ -352,6 +381,9 @@ impl SessionManager {
     }
 
     fn alloc_ul_teid(&mut self) -> u32 {
+        if let Some(id) = self.free_ul_teids.pop() {
+            return id;
+        }
         let teid = self.next_ul_teid;
         self.next_ul_teid = self.next_ul_teid.wrapping_add(1);
         if self.next_ul_teid < INITIAL_UL_TEID {
@@ -546,4 +578,39 @@ mod tests {
     fn has_bpf_false_by_default() {
         assert!(!mgr().has_bpf());
     }
-                }
+
+    // ── TEID free list ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn removed_teid_is_recycled() {
+        let mut m = mgr();
+        let t1    = m.create_session(0, 1, [10, 0, 0, 1], 0, [1, 1, 1, 1], 9);
+        m.remove_session(t1);
+        let t2    = m.create_session(0, 2, [10, 0, 0, 2], 0, [1, 1, 1, 1], 9);
+        assert_eq!(t2, t1, "freed TEID should be recycled before advancing the counter");
+    }
+
+    #[test]
+    fn free_teid_count_tracks_recycled_teids() {
+        let mut m = mgr();
+        assert_eq!(m.free_teid_count(), 0);
+        let t1 = m.create_session(0, 1, [10, 0, 0, 1], 0, [1, 1, 1, 1], 9);
+        m.remove_session(t1);
+        assert_eq!(m.free_teid_count(), 1);
+        m.create_session(0, 2, [10, 0, 0, 2], 0, [1, 1, 1, 1], 9);
+        assert_eq!(m.free_teid_count(), 0, "recycled TEID consumed by the next create_session");
+    }
+
+    #[test]
+    fn externally_allocated_teid_is_also_recyclable() {
+        // create_session_with_teid bypasses the internal counter entirely, but
+        // removing it should still feed the free list — a later internal
+        // create_session() call can pick it up.
+        let mut m    = mgr();
+        let ext_teid = 0x9999_0001_u32;
+        m.create_session_with_teid(ext_teid, 0, 1, [10, 0, 0, 1], [0; 4], 9);
+        m.remove_session(ext_teid);
+        let next = m.create_session(0, 2, [10, 0, 0, 2], 0, [1, 1, 1, 1], 9);
+        assert_eq!(next, ext_teid);
+    }
+}
