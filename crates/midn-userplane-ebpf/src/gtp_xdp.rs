@@ -49,6 +49,19 @@
 //!
 //! Local variables in `process`: ~56 bytes. BPF verifier limit: 512 bytes.
 //!
+//! ## Calling raw helpers — typed pointer, not `as_ptr()`
+//!
+//! `EbpfContext::as_ptr()` returns an erased `*mut c_void` — useful for
+//! helpers that are generically typed across context kinds. `bpf_xdp_adjust_head`
+//! is NOT one of those: aya-ebpf-bindings generates it with the concrete
+//! signature `fn(*mut xdp_md, i32) -> c_long`. Passing `ctx.as_ptr()`
+//! (`*mut c_void`) there is a type mismatch (E0308).
+//!
+//! `XdpContext` carries the original typed pointer in its public `ctx` field
+//! (`pub ctx: *mut xdp_md`) — that's what every raw XDP helper call wants.
+//! Use `ctx.ctx`, not `ctx.as_ptr()`, whenever calling into `aya_ebpf::helpers`
+//! directly with an XDP-specific function.
+//!
 //! ## Activating Phase 3.2 (DL XDP_TX via XDP_REDIRECT)
 //!
 //! DL packets (from internet) arrive on a different port/NIC path.
@@ -56,10 +69,7 @@
 //! add GTP-U headers, and XDP_REDIRECT to the eNodeB-facing interface.
 //! Out of scope until Phase 3.2.
 
-// `EbpfContext` provides `.as_ptr()` / `.data()` / `.data_end()` on XdpContext.
-// Without this import, the compiler can see the trait is implemented for
-// XdpContext but won't let you call its methods (E0599).
-use aya_ebpf::{bindings::xdp_action, programs::XdpContext, EbpfContext};
+use aya_ebpf::{bindings::xdp_action, programs::XdpContext};
 
 use crate::maps::{PdnGwConfig, XdpRouteEntry, PDN_GW_CONFIG, TEID_TO_ROUTE};
 
@@ -205,8 +215,13 @@ pub fn process(ctx: XdpContext) -> Result<u32, ()> {
     //
     // bpf_xdp_adjust_head with positive delta: moves data pointer forward
     // (shrinks packet from the front). Returns 0 on success, < 0 on failure.
+    //
+    // NOTE: pass `ctx.ctx` (the typed `*mut xdp_md` field), NOT `ctx.as_ptr()`
+    // (which is `*mut c_void` via the EbpfContext trait). The generated
+    // binding wants the concrete xdp_md pointer type — passing the erased
+    // c_void pointer is a type mismatch (E0308).
     let strip = (outer_len - ETH_HDR_LEN) as i32;
-    if unsafe { aya_ebpf::helpers::bpf_xdp_adjust_head(ctx.as_ptr(), strip) } < 0 {
+    if unsafe { aya_ebpf::helpers::bpf_xdp_adjust_head(ctx.ctx, strip) } < 0 {
         return Ok(xdp_action::XDP_PASS);
     }
 
@@ -241,4 +256,4 @@ pub fn process(ctx: XdpContext) -> Result<u32, ()> {
     //   [NewETH][InnerIP][InnerPayload]
     // The PDN gateway / router routes it toward the internet.
     Ok(xdp_action::XDP_TX)
-}
+                          }
