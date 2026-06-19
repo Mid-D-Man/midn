@@ -12,6 +12,8 @@
 //! | 2    | UplinkNas(AuthResponse)     | `handle_auth_response`    |
 //! | 3    | UplinkNas(SecModeComplete)  | `handle_sec_mode_complete`|
 //! | 8    | UplinkNas(AttachComplete)   | `handle_attach_complete`  |
+//!
+//! Teardown (Detach) lives in `mme::detach`, not here.
 
 use midn_auth::MilenageContext;
 use midn_proto::nas::{
@@ -24,7 +26,7 @@ use midn_proto::s1ap::{
 
 use crate::hss::Hss;
 use crate::mme::state_machine::{
-    AttachContext, ImsiRegistry, SessionState, TunnelComponent, UpfEvent, World,
+    AttachContext, ImsiRegistry, SessionState, TeidAllocator, TunnelComponent, UpfEvent, World,
 };
 
 // ── AMF constant ──────────────────────────────────────────────────────────────
@@ -170,7 +172,7 @@ pub fn handle_security_mode_complete(
     enb_ue_s1ap_id:  u32,
     mme_ue_s1ap_id:  u32,
     phase3_upf:      Option<[u8; 4]>,
-    teid_counter:    &mut u32,
+    teid_allocator:  &mut TeidAllocator,
 ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
     let ctx = match world.get_attach_context(mme_ue_s1ap_id) {
         Some(c) => c,
@@ -185,8 +187,7 @@ pub fn handle_security_mode_complete(
     let attach_accept_nas = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
 
     if let Some(_upf_addr) = phase3_upf {
-        let ul_teid = *teid_counter;
-        *teid_counter = teid_counter.wrapping_add(1);
+        let ul_teid = teid_allocator.alloc();
 
         world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
             ul_teid: Some(ul_teid),
@@ -253,4 +254,4 @@ fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
     key[..16].copy_from_slice(ck);
     key[16..].copy_from_slice(ik);
     key
-            }
+        }
