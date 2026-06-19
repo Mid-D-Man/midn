@@ -482,10 +482,28 @@ jobs:
               echo "⏭ eBPF feature build not triggered this run"
             fi
 
+            # eBPF feature test counts.
+            #
+            # FIX (was producing "0 0 passed, 0 0 failed"):
+            #   1. The old regex '^\.\.\. ok$' required the line to literally
+            #      START with "... ok" — actual cargo output is
+            #      "test foo::bar ... ok", so it NEVER matched, even on success.
+            #   2. `grep -c PATTERN file || echo 0` double-prints zero: grep -c
+            #      already prints "0" to stdout when there's no match (it just
+            #      also exits 1), so the `|| echo 0` fallback ALSO fires and
+            #      prints a second "0" into the same $(...) capture — the
+            #      newline between them collapses to a space, giving "0 0".
+            #
+            # Fixed: drop the anchors (match "... ok" / "... FAILED" anywhere
+            # on the line, which tolerates the optional trailing "(N.NNs)"
+            # timing suffix cargo appends to slow tests), and drop the
+            # `|| echo 0` double-print in favor of a plain `${VAR:-0}` default.
             if [ -f "midn-userplane-ebpf-test-raw.txt" ]; then
               echo ""
-              PASSED=$(grep -c '^\.\.\. ok$' midn-userplane-ebpf-test-raw.txt 2>/dev/null || echo 0)
-              FAILED=$(grep -c '^\.\.\. FAILED$' midn-userplane-ebpf-test-raw.txt 2>/dev/null || echo 0)
+              PASSED=$(grep -c '\.\.\. ok' midn-userplane-ebpf-test-raw.txt 2>/dev/null || true)
+              PASSED=${PASSED:-0}
+              FAILED=$(grep -c '\.\.\. FAILED' midn-userplane-ebpf-test-raw.txt 2>/dev/null || true)
+              FAILED=${FAILED:-0}
               echo "eBPF feature tests: **${PASSED} passed**, **${FAILED} failed**"
             fi
 
