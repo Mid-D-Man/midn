@@ -15,11 +15,14 @@ pub use codec::{
     encode_sec_mode_cmd,
     encode_sec_mode_complete,
     encode_attach_complete,
+    encode_detach_request,
+    encode_detach_accept,
     DecodedAttachAccept,
     DecodedAttachRequest,
     DecodedAuthenticationRequest,
     DecodedAuthenticationResponse,
     DecodedSecurityModeCommand,
+    DecodedDetachRequest,
     NasPdu,
     MT_ATTACH_REQUEST,
     MT_AUTHENTICATION_REQUEST,
@@ -28,6 +31,8 @@ pub use codec::{
     MT_SECURITY_MODE_COMPLETE,
     MT_ATTACH_ACCEPT,
     MT_ATTACH_COMPLETE,
+    MT_DETACH_REQUEST,
+    MT_DETACH_ACCEPT,
 };
 pub use ie::{NasEeaAlgorithm, NasEiaAlgorithm};
 pub use messages::NasMessage;
