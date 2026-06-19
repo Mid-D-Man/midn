@@ -1,0 +1,173 @@
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+   Compiling proc-macro2 v1.0.106
+   Compiling unicode-ident v1.0.24
+   Compiling quote v1.0.45
+   Compiling libc v0.2.186
+   Compiling syn v2.0.118
+   Compiling zerocopy v0.8.52
+   Compiling cfg-if v1.0.4
+   Compiling serde_core v1.0.228
+   Compiling version_check v0.9.5
+   Compiling generic-array v0.14.7
+   Compiling serde v1.0.228
+   Compiling zerocopy-derive v0.8.52
+   Compiling serde_derive v1.0.228
+   Compiling crossbeam-utils v0.8.21
+   Compiling typenum v1.20.1
+   Compiling semver v1.0.28
+   Compiling rustc_version v0.4.1
+   Compiling getrandom v0.2.17
+   Compiling scopeguard v1.2.0
+   Compiling autocfg v1.5.1
+   Compiling thiserror v2.0.18
+   Compiling zmij v1.0.21
+   Compiling num-traits v0.2.19
+   Compiling crossbeam-epoch v0.9.18
+   Compiling lock_api v0.4.14
+   Compiling rand_core v0.6.4
+   Compiling heapless v0.7.17
+   Compiling ppv-lite86 v0.2.21
+   Compiling inout v0.1.4
+   Compiling crypto-common v0.1.7
+   Compiling zeroize_derive v1.5.0
+   Compiling thiserror-impl v2.0.18
+   Compiling byteorder v1.5.0
+   Compiling rayon-core v1.13.0
+   Compiling either v1.16.0
+   Compiling serde_json v1.0.150
+   Compiling hash32 v0.2.1
+   Compiling zeroize v1.9.0
+   Compiling rand_chacha v0.3.1
+   Compiling cipher v0.4.4
+   Compiling spin v0.9.8
+   Compiling crossbeam-deque v0.8.6
+   Compiling half v2.7.1
+   Compiling clap_lex v1.1.0
+   Compiling regex-syntax v0.8.11
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.2
+   Compiling stable_deref_trait v1.2.1
+   Compiling plotters-backend v0.3.7
+   Compiling ciborium-io v0.2.2
+   Compiling cpufeatures v0.2.17
+   Compiling anstyle v1.0.14
+   Compiling thiserror v1.0.69
+   Compiling clap_builder v4.6.0
+   Compiling aes v0.8.4
+   Compiling ciborium-ll v0.2.2
+   Compiling plotters-svg v0.3.7
+   Compiling regex-automata v0.4.14
+   Compiling rand v0.8.6
+   Compiling cobs v0.3.0
+   Compiling itertools v0.10.5
+   Compiling thiserror-impl v1.0.69
+   Compiling socket2 v0.6.4
+   Compiling mio v1.2.1
+   Compiling cast v0.3.0
+   Compiling hex v0.4.3
+   Compiling same-file v1.0.6
+   Compiling pin-project-lite v0.2.17
+   Compiling bytes v1.12.0
+   Compiling subtle v2.6.1
+   Compiling midn-auth v0.1.0 (/home/runner/work/midn/midn/crates/midn-auth)
+   Compiling tokio v1.52.3
+   Compiling walkdir v2.5.0
+   Compiling criterion-plot v0.5.0
+   Compiling postcard v1.1.3
+   Compiling plotters v0.3.7
+   Compiling rayon v1.12.0
+   Compiling tinytemplate v1.2.1
+   Compiling regex v1.12.4
+   Compiling ciborium v0.2.2
+   Compiling clap v4.6.1
+   Compiling is-terminal v0.4.17
+   Compiling once_cell v1.21.4
+   Compiling oorandom v11.1.5
+   Compiling anes v0.1.6
+   Compiling midn-proto v0.1.0 (/home/runner/work/midn/midn/crates/midn-proto)
+   Compiling criterion v0.5.1
+    Finished `release` profile [optimized] target(s) in 51.15s
+     Running unittests src/lib.rs (target/release/deps/midn_proto-39aa90857aa1ee74)
+
+running 31 tests
+test gtp::header::tests::echo_request_is_not_gpdu ... ok
+test gtp::header::tests::new_gpdu_flags_are_standard ... ok
+test gtp::header::tests::parse_gpdu_teid_deadbeef ... ok
+test gtp::header::tests::parse_too_short_returns_none ... ok
+test gtp::header::tests::round_trip_serialization ... ok
+test gtp::parser::tests::parse_echo_request ... ok
+test gtp::parser::tests::parse_empty_returns_none ... ok
+test gtp::parser::tests::parse_gpdu_no_optional_fields ... ok
+test gtp::parser::tests::parse_gpdu_with_sequence_number_flag ... ok
+test gtp::parser::tests::parse_too_short_for_header ... ok
+test nas::codec::tests::attach_accept_with_ip ... ok
+test nas::codec::tests::attach_complete_decode ... ok
+test nas::codec::tests::attach_request_imsi_round_trip ... ok
+test nas::codec::tests::auth_request_round_trip ... ok
+test nas::codec::tests::auth_response_round_trip ... ok
+test nas::codec::tests::decode_rejects_wrong_pd ... ok
+test nas::codec::tests::detach_accept_decode ... ok
+test nas::codec::tests::detach_request_round_trip_normal ... ok
+test nas::codec::tests::detach_request_switch_off_flag_round_trips ... ok
+test nas::codec::tests::sec_mode_command_round_trip ... ok
+test nas::codec::tests::security_mode_complete_decode ... ok
+test nas::ie::tests::decode_imsi_rejects_wrong_type ... ok
+test nas::ie::tests::imsi_encode_identity_type_is_imsi ... ok
+test nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits ... ok
+test nas::ie::tests::imsi_encode_produces_8_bytes ... ok
+test nas::ie::tests::imsi_round_trip_standard ... ok
+test nas::ie::tests::imsi_round_trip_with_leading_zeros ... ok
+test nas::ie::tests::lv_round_trip ... ok
+test nas::ie::tests::security_algorithms_round_trip ... ok
+test nas::ie::tests::tlv_round_trip ... ok
+test nas::messages::tests::auth_request_round_trip_fields ... ok
+
+successes:
+
+successes:
+    gtp::header::tests::echo_request_is_not_gpdu
+    gtp::header::tests::new_gpdu_flags_are_standard
+    gtp::header::tests::parse_gpdu_teid_deadbeef
+    gtp::header::tests::parse_too_short_returns_none
+    gtp::header::tests::round_trip_serialization
+    gtp::parser::tests::parse_echo_request
+    gtp::parser::tests::parse_empty_returns_none
+    gtp::parser::tests::parse_gpdu_no_optional_fields
+    gtp::parser::tests::parse_gpdu_with_sequence_number_flag
+    gtp::parser::tests::parse_too_short_for_header
+    nas::codec::tests::attach_accept_with_ip
+    nas::codec::tests::attach_complete_decode
+    nas::codec::tests::attach_request_imsi_round_trip
+    nas::codec::tests::auth_request_round_trip
+    nas::codec::tests::auth_response_round_trip
+    nas::codec::tests::decode_rejects_wrong_pd
+    nas::codec::tests::detach_accept_decode
+    nas::codec::tests::detach_request_round_trip_normal
+    nas::codec::tests::detach_request_switch_off_flag_round_trips
+    nas::codec::tests::sec_mode_command_round_trip
+    nas::codec::tests::security_mode_complete_decode
+    nas::ie::tests::decode_imsi_rejects_wrong_type
+    nas::ie::tests::imsi_encode_identity_type_is_imsi
+    nas::ie::tests::imsi_encode_odd_flag_set_for_15_digits
+    nas::ie::tests::imsi_encode_produces_8_bytes
+    nas::ie::tests::imsi_round_trip_standard
+    nas::ie::tests::imsi_round_trip_with_leading_zeros
+    nas::ie::tests::lv_round_trip
+    nas::ie::tests::security_algorithms_round_trip
+    nas::ie::tests::tlv_round_trip
+    nas::messages::tests::auth_request_round_trip_fields
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests midn_proto
+
+running 0 tests
+
+successes:
+
+successes:
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
