@@ -9,8 +9,10 @@
 //!
 //! TEIDs are 32-bit identifiers chosen by this UPF for UL tunnels.
 //! DL TEIDs are assigned by the eNodeB and carried in
-//! InitialContextSetupResponse. A simple counter provides unique TEIDs;
-//! Phase 3 can improve this with a proper allocator.
+//! InitialContextSetupResponse. A free list recycles TEIDs returned by
+//! `destroy_tunnel` before the monotonic counter advances — mirrors the same
+//! pattern used by `midn_core::mme::state_machine::TeidAllocator` and
+//! `midn_userplane::upf::session_manager::SessionManager`.
 
 use crate::upf::routing::{RouteEntry, RoutingTable};
 
@@ -18,6 +20,9 @@ use crate::upf::routing::{RouteEntry, RoutingTable};
 pub struct TunnelManager {
     /// Next uplink TEID to allocate (monotonically increasing).
     next_ul_teid: u32,
+    /// TEIDs returned by `destroy_tunnel`, handed out again by `alloc_ul_teid`
+    /// before the counter advances.
+    free_ul_teids: Vec<u32>,
     /// Routing table managed by this tunnel manager.
     pub routing:  RoutingTable,
 }
@@ -26,6 +31,7 @@ impl TunnelManager {
     pub fn new() -> Self {
         Self {
             next_ul_teid: 0x0001_0000, // start at 64k to avoid low values
+            free_ul_teids: Vec::with_capacity(64),
             routing: RoutingTable::new(),
         }
     }
@@ -52,14 +58,22 @@ impl TunnelManager {
     }
 
     /// Teardown a tunnel by its uplink TEID (called on detach).
+    ///
+    /// The freed TEID goes back into the free list — the next `create_tunnel`
+    /// call reuses it before advancing the counter.
     pub fn destroy_tunnel(&mut self, ul_teid: u32) {
         if self.routing.remove(ul_teid).is_some() {
-            tracing::debug!(ul_teid, "GTP-U tunnel destroyed");
+            self.free_ul_teids.push(ul_teid);
+            tracing::debug!(ul_teid, "GTP-U tunnel destroyed — TEID recycled");
         }
     }
 
-    /// Allocate the next uplink TEID. Wraps on overflow.
+    /// Allocate the next uplink TEID — reuses a freed one if available,
+    /// otherwise advances the counter. Wraps on overflow.
     fn alloc_ul_teid(&mut self) -> u32 {
+        if let Some(id) = self.free_ul_teids.pop() {
+            return id;
+        }
         let teid = self.next_ul_teid;
         self.next_ul_teid = self.next_ul_teid.wrapping_add(1);
         if self.next_ul_teid == 0 { self.next_ul_teid = 0x0001_0000; }
@@ -67,6 +81,9 @@ impl TunnelManager {
     }
 
     pub fn active_tunnel_count(&self) -> usize { self.routing.len() }
+
+    /// Number of TEIDs currently available for reuse.
+    pub fn free_teid_count(&self) -> usize { self.free_ul_teids.len() }
 }
 
 impl Default for TunnelManager { fn default() -> Self { Self::new() } }
@@ -97,4 +114,24 @@ mod tests {
         let t2 = mgr.create_tunnel([10, 0, 0, 2], 0x2000, [1, 1, 1, 1], 9);
         assert_ne!(t1, t2);
     }
-}
+
+    #[test]
+    fn destroyed_teid_is_recycled() {
+        let mut mgr = TunnelManager::new();
+        let t1 = mgr.create_tunnel([10, 0, 0, 1], 0x1000, [1, 1, 1, 1], 9);
+        mgr.destroy_tunnel(t1);
+        let t2 = mgr.create_tunnel([10, 0, 0, 2], 0x2000, [1, 1, 1, 1], 9);
+        assert_eq!(t2, t1, "freed TEID should be recycled before advancing the counter");
+    }
+
+    #[test]
+    fn free_teid_count_tracks_recycled_teids() {
+        let mut mgr = TunnelManager::new();
+        assert_eq!(mgr.free_teid_count(), 0);
+        let t1 = mgr.create_tunnel([10, 0, 0, 1], 0x1000, [1, 1, 1, 1], 9);
+        mgr.destroy_tunnel(t1);
+        assert_eq!(mgr.free_teid_count(), 1);
+        mgr.create_tunnel([10, 0, 0, 2], 0x2000, [1, 1, 1, 1], 9);
+        assert_eq!(mgr.free_teid_count(), 0);
+    }
+    }
