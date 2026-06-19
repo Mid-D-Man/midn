@@ -17,6 +17,8 @@ pub use codec::{
     encode_attach_complete,
     encode_detach_request,
     encode_detach_accept,
+    encode_protected,
+    decode_protected,
     DecodedAttachAccept,
     DecodedAttachRequest,
     DecodedAuthenticationRequest,
@@ -33,6 +35,15 @@ pub use codec::{
     MT_ATTACH_COMPLETE,
     MT_DETACH_REQUEST,
     MT_DETACH_ACCEPT,
+    SHT_PLAIN,
+    SHT_INTEGRITY,
+    SHT_INTEGRITY_CIPHERED,
+    SHT_INTEGRITY_NEW_CTX,
+    SHT_INTEGRITY_CIPHERED_NEW_CTX,
 };
 pub use ie::{NasEeaAlgorithm, NasEiaAlgorithm};
 pub use messages::NasMessage;
+pub use security::{
+    derive_nas_keys, eea2_apply, eia2_compute_mac, eia2_verify_mac,
+    reconstruct_count, Direction, NasSecurityContext, ProtectedNas, NAS_BEARER,
+};
