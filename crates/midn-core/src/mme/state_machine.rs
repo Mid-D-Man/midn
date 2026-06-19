@@ -7,12 +7,23 @@
 //! |---------|--------------------------|-----------------------------------|
 //! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept)|
 //! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest        |
+//!
+//! ## TEID lifecycle
+//!
+//! `TeidAllocator` (below) hands out Phase 3 UL TEIDs with a free list, so a
+//! detached subscriber's TEID becomes available for the next attach instead
+//! of the counter growing unbounded. Allocated in
+//! `attach::handle_security_mode_complete`, released in
+//! `handle_release_complete` once `UeContextReleaseComplete` confirms the
+//! eNodeB has actually torn down the radio context — whether that release was
+//! triggered by the network or by `mme::detach::handle_detach_request`.
 
 use std::collections::HashMap;
 
 use crate::s1ap::S1apMessage;
 use crate::hss::Hss;
 use crate::mme::attach;
+use crate::mme::detach;
 
 // ── EntityId ──────────────────────────────────────────────────────────────────
 
@@ -113,6 +124,52 @@ impl ImsiRegistry {
     pub fn lookup(&self, imsi: u64) -> Option<u32> { self.map.get(&imsi).copied() }
 }
 
+// ── TEID allocator ────────────────────────────────────────────────────────────
+
+/// Allocates uplink TEIDs for Phase 3 sessions, with a free list so detached
+/// subscribers' TEIDs get reused instead of the counter growing forever.
+///
+/// Mirrors the same free-list pattern as `World`'s entity ID allocator and
+/// `midn_userplane::upf::tunnel::TunnelManager` — pop a freed id first, only
+/// fall back to the monotonic counter when the free list is empty.
+#[derive(Debug)]
+pub struct TeidAllocator {
+    next: u32,
+    free: Vec<u32>,
+}
+
+impl TeidAllocator {
+    pub fn new(base: u32) -> Self {
+        Self { next: base, free: Vec::with_capacity(64) }
+    }
+
+    /// Allocate a TEID — reuses a freed one if available, else advances the counter.
+    pub fn alloc(&mut self) -> u32 {
+        if let Some(id) = self.free.pop() {
+            return id;
+        }
+        let t = self.next;
+        self.next = self.next.wrapping_add(1);
+        t
+    }
+
+    /// Return a TEID to the free list after its session has torn down.
+    ///
+    /// Call exactly once per TEID, after the subscriber's tunnel/session
+    /// state has been removed — double-releasing the same TEID would let it
+    /// be handed out twice concurrently.
+    pub fn release(&mut self, teid: u32) {
+        self.free.push(teid);
+    }
+
+    /// Number of TEIDs currently available for reuse.
+    pub fn free_count(&self) -> usize { self.free.len() }
+}
+
+impl Default for TeidAllocator {
+    fn default() -> Self { Self::new(0x0001_0000) }
+}
+
 // ── UpfEvent ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -142,17 +199,17 @@ pub struct Mme {
     pub(crate) registry: ImsiRegistry,
     pub hss:          Hss,
     phase3_upf:       Option<[u8; 4]>,
-    teid_counter:     u32,
+    teid_allocator:   TeidAllocator,
 }
 
 impl Mme {
     pub fn new() -> Self {
         Self {
-            world:        World::new(),
-            registry:     ImsiRegistry::new(),
-            hss:          Hss::new(),
-            phase3_upf:   None,
-            teid_counter: 0x0001_0000,
+            world:          World::new(),
+            registry:       ImsiRegistry::new(),
+            hss:            Hss::new(),
+            phase3_upf:     None,
+            teid_allocator: TeidAllocator::new(0x0001_0000),
         }
     }
 
@@ -164,9 +221,18 @@ impl Mme {
     pub fn hss_mut(&mut self) -> &mut Hss { &mut self.hss }
 
     pub fn alloc_ul_teid(&mut self) -> u32 {
-        let t = self.teid_counter;
-        self.teid_counter = self.teid_counter.wrapping_add(1);
-        t
+        self.teid_allocator.alloc()
+    }
+
+    /// Return a TEID to the free list — call after a subscriber's session has
+    /// fully torn down (see `handle_release_complete`).
+    pub fn release_ul_teid(&mut self, teid: u32) {
+        self.teid_allocator.release(teid);
+    }
+
+    /// Number of TEIDs currently available for reuse — mainly for tests/metrics.
+    pub fn free_teid_count(&self) -> usize {
+        self.teid_allocator.free_count()
     }
 
     pub fn subscriber_count(&self) -> usize {
@@ -224,11 +290,17 @@ impl Mme {
                     enb_ue_s1ap_id,
                     mme_ue_s1ap_id,
                     self.phase3_upf,
-                    &mut self.teid_counter,
+                    &mut self.teid_allocator,
                 )
             }
             Ok(NasPdu::AttachComplete) => {
                 attach::handle_attach_complete(&mut self.world, mme_ue_s1ap_id)
+            }
+            Ok(NasPdu::DetachRequest(..)) => {
+                let responses = detach::handle_detach_request(
+                    &self.world, enb_ue_s1ap_id, mme_ue_s1ap_id, nas_pdu,
+                );
+                (responses, vec![])
             }
             _ => {
                 tracing::warn!(mme_ue_s1ap_id, "UplinkNasTransport: unknown NAS PDU");
@@ -281,8 +353,11 @@ impl Mme {
         tracing::info!(entity, "UeContextReleaseComplete — entity despawned");
 
         match ul_teid {
-            Some(t) => (vec![], vec![UpfEvent::RemoveSession { ul_teid: t }]),
-            None    => (vec![], vec![]),
+            Some(t) => {
+                self.teid_allocator.release(t);
+                (vec![], vec![UpfEvent::RemoveSession { ul_teid: t }])
+            }
+            None => (vec![], vec![]),
         }
     }
 }
@@ -382,6 +457,30 @@ mod tests {
         let mut mme = Mme::new();
         assert_eq!(mme.alloc_ul_teid(), 0x0001_0000);
         assert_eq!(mme.alloc_ul_teid(), 0x0001_0001);
+    }
+
+    #[test]
+    fn teid_allocator_recycles_freed_ids() {
+        let mut alloc = TeidAllocator::new(100);
+        let a = alloc.alloc();
+        let b = alloc.alloc();
+        assert_eq!(a, 100);
+        assert_eq!(b, 101);
+        alloc.release(a);
+        assert_eq!(alloc.free_count(), 1);
+        let c = alloc.alloc();
+        assert_eq!(c, a, "freed id should be handed out before advancing the counter");
+        assert_eq!(alloc.free_count(), 0);
+    }
+
+    #[test]
+    fn mme_release_ul_teid_recycles_via_allocator() {
+        let mut mme = Mme::new();
+        let t1 = mme.alloc_ul_teid();
+        mme.release_ul_teid(t1);
+        assert_eq!(mme.free_teid_count(), 1);
+        let t2 = mme.alloc_ul_teid();
+        assert_eq!(t2, t1);
     }
 
     #[test]
@@ -627,4 +726,132 @@ mod tests {
         assert!(responses.is_empty(), "wrong RES must produce no S1AP response");
         assert!(events.is_empty(),    "wrong RES must produce no UPF events");
     }
+
+    // ── Phase 3 detach: full close-the-loop test ──────────────────────────────
+
+    #[tokio::test]
+    async fn phase3_detach_releases_teid_for_reuse() {
+        use midn_auth::MilenageContext;
+        use midn_proto::nas::{
+            decode_nas, encode_attach_request, encode_auth_response,
+            encode_sec_mode_complete, encode_detach_request, NasPdu,
+        };
+        use midn_proto::s1ap::{
+            InitialUeMessage, S1apMessage, UeContextReleaseComplete, UplinkNasTransport,
+        };
+
+        let k_buf: [u8; 16] = [
+            0x46, 0x5b, 0x5c, 0xe8, 0xb1, 0x99, 0xb4, 0x9f,
+            0xaa, 0x5f, 0x0a, 0x2e, 0xe2, 0x38, 0xa6, 0xbc,
+        ];
+        let opc_buf: [u8; 16] = [
+            0xcd, 0x63, 0xcb, 0x71, 0x95, 0x4a, 0x9f, 0x4e,
+            0x48, 0xa5, 0x99, 0x4e, 0x37, 0xa0, 0x2b, 0xaf,
+        ];
+        let imsi     = 234_15_5550001_u64;
+        let upf_addr = [127u8, 0, 0, 1];
+        let enb_id   = 0x0002_0001_u32;
+
+        let mut mme = Mme::new().with_phase3(upf_addr);
+        mme.hss.provision(imsi, AuthKey(k_buf), OpCode(opc_buf));
+        let ctx = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
+
+        // ── Drive through attach far enough to allocate a UL TEID ────────────
+
+        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {
+            enb_ue_s1ap_id: enb_id,
+            nas_pdu:        encode_attach_request(imsi, 1, 0),
+            tai: [0; 5], eutran_cgi: [0; 7], rrc_cause: 1,
+        })).await;
+        let (mme_ue_id, auth_req_pdu) = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(m) => (m.mme_ue_s1ap_id, m.nas_pdu.clone()),
+            _ => panic!("expected DownlinkNasTransport"),
+        };
+        let rand_bytes = match decode_nas(&auth_req_pdu).unwrap() {
+            NasPdu::AuthenticationRequest(d) => d.rand,
+            _ => panic!("expected AuthReq"),
+        };
+        let av = ctx.generate_vector_with_rand(
+            Sqn::from_bytes(&[0u8; 6]), Amf([0x80, 0x00]), Rand(rand_bytes),
+        );
+        mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: encode_auth_response(&av.res),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        let (_, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: encode_sec_mode_complete(),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        let ul_teid = match &events[0] {
+            UpfEvent::CreateSession { ul_teid, .. } => *ul_teid,
+            _ => panic!("expected CreateSession"),
+        };
+        assert_eq!(mme.free_teid_count(), 0, "freshly allocated TEID is not free");
+
+        // ── UE sends DetachRequest ────────────────────────────────────────────
+
+        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: encode_detach_request(1, false, 0, &[0; 10]),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        assert_eq!(responses.len(), 2, "expect DetachAccept + UeContextReleaseCommand");
+        assert!(events.is_empty(), "no UpfEvent until UeContextReleaseComplete");
+        assert!(matches!(responses[1], S1apMessage::UeContextReleaseCommand { .. }));
+
+        // ── eNodeB confirms release ───────────────────────────────────────────
+
+        let (responses, events) = mme.process_s1ap(
+            S1apMessage::UeContextReleaseComplete(UeContextReleaseComplete {
+                mme_ue_s1ap_id: mme_ue_id,
+                enb_ue_s1ap_id: enb_id,
+            })
+        ).await;
+        assert!(responses.is_empty());
+        match &events[0] {
+            UpfEvent::RemoveSession { ul_teid: t } => assert_eq!(*t, ul_teid),
+            _ => panic!("expected RemoveSession"),
+        }
+        assert_eq!(mme.subscriber_count(), 0);
+        assert_eq!(mme.free_teid_count(), 1, "TEID returned to the free list");
+
+        // ── Next subscriber's attach reuses the freed TEID ────────────────────
+
+        let imsi2 = 234_15_5550002_u64;
+        mme.hss.provision(imsi2, AuthKey(k_buf), OpCode(opc_buf));
+        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {
+            enb_ue_s1ap_id: enb_id + 1,
+            nas_pdu: encode_attach_request(imsi2, 1, 0),
+            tai: [0; 5], eutran_cgi: [0; 7], rrc_cause: 1,
+        })).await;
+        let (mme_ue_id2, auth_req_pdu2) = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(m) => (m.mme_ue_s1ap_id, m.nas_pdu.clone()),
+            _ => panic!("expected DownlinkNasTransport"),
+        };
+        let rand_bytes2 = match decode_nas(&auth_req_pdu2).unwrap() {
+            NasPdu::AuthenticationRequest(d) => d.rand,
+            _ => panic!("expected AuthReq"),
+        };
+        let av2 = ctx.generate_vector_with_rand(
+            Sqn::from_bytes(&[0u8; 6]), Amf([0x80, 0x00]), Rand(rand_bytes2),
+        );
+        mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id + 1, mme_ue_s1ap_id: mme_ue_id2,
+            nas_pdu: encode_auth_response(&av2.res),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        let (_, events2) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id + 1, mme_ue_s1ap_id: mme_ue_id2,
+            nas_pdu: encode_sec_mode_complete(),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        let ul_teid2 = match &events2[0] {
+            UpfEvent::CreateSession { ul_teid, .. } => *ul_teid,
+            _ => panic!("expected CreateSession"),
+        };
+        assert_eq!(ul_teid2, ul_teid, "second subscriber recycles first subscriber's freed TEID");
+        assert_eq!(mme.free_teid_count(), 0);
     }
+        }
