@@ -14,11 +14,19 @@
 //! | 8    | UplinkNas(AttachComplete)   | `handle_attach_complete`  |
 //!
 //! Teardown (Detach) lives in `mme::detach`, not here.
+//!
+//! ## NAS security activation
+//!
+//! `handle_security_mode_complete` is also where NAS security activates —
+//! see [`SELECTED_EEA`]/[`SELECTED_EIA`] and `nas::security` module docs for
+//! the simplification (SecurityModeCommand/Complete stay plain; AttachAccept
+//! is the first protected message).
 
 use midn_auth::MilenageContext;
 use midn_proto::nas::{
-    decode_nas, encode_attach_accept, encode_auth_request,
-    encode_sec_mode_cmd, NasPdu, NasEeaAlgorithm, NasEiaAlgorithm,
+    decode_nas, encode_attach_accept, encode_auth_request, encode_protected,
+    encode_sec_mode_cmd, NasEeaAlgorithm, NasEiaAlgorithm, NasPdu, NasSecurityContext,
+    NAS_BEARER, SHT_INTEGRITY_CIPHERED,
 };
 use midn_proto::s1ap::{
     DownlinkNasTransport, ErabToSetup, InitialContextSetupRequest, S1apMessage,
@@ -33,6 +41,15 @@ use crate::mme::state_machine::{
 
 /// Authentication Management Field: bit 0 = 1 signals UMTS AKA (TS 33.102).
 const AMF: [u8; 2] = [0x80, 0x00];
+
+/// NAS algorithm pair this simulation always selects for SecurityModeCommand.
+/// Real MMEs negotiate against the UE's network capability IE
+/// (`ue_network_cap` in `DecodedAttachRequest`); this simulation ignores it
+/// and always picks 128-EEA2/128-EIA2. `handle_security_mode_complete` reads
+/// these same constants when deriving the NAS security context, since the
+/// algorithm pair has to match what was actually advertised.
+const SELECTED_EEA: NasEeaAlgorithm = NasEeaAlgorithm::Eea2;
+const SELECTED_EIA: NasEiaAlgorithm = NasEiaAlgorithm::Eia2;
 
 // ── Error type ────────────────────────────────────────────────────────────────
 
@@ -95,13 +112,14 @@ pub fn start_attach(
         imsi,
         enb_ue_s1ap_id,
         mme_ue_s1ap_id: entity,
-        rand:     auth_info.rand,
-        xres:     auth_info.vector.res,
-        ck:       auth_info.vector.ck,
-        ik:       auth_info.vector.ik,
-        sqn_used: auth_info.sqn_used,
-        ue_ip:    ue_ip.unwrap_or([0; 4]),
-        ul_teid:  None,
+        rand:         auth_info.rand,
+        xres:         auth_info.vector.res,
+        ck:           auth_info.vector.ck,
+        ik:           auth_info.vector.ik,
+        sqn_used:     auth_info.sqn_used,
+        ue_ip:        ue_ip.unwrap_or([0; 4]),
+        ul_teid:      None,
+        nas_security: None,
     });
 
     // Encode NAS AuthenticationRequest PDU (NAS KSI = 0 for simulation).
@@ -149,10 +167,13 @@ pub fn handle_auth_response(
         return (vec![], vec![]);
     }
 
-    // RES verified — issue SecurityModeCommand (EEA2 + EIA2).
+    // RES verified — issue SecurityModeCommand, proposing the algorithm pair
+    // this simulation always selects. Sent PLAIN: NAS security activates one
+    // message later, at SecurityModeComplete (see nas::security module docs
+    // and handle_security_mode_complete below).
     let nas = encode_sec_mode_cmd(
-        NasEeaAlgorithm::Eea2,
-        NasEiaAlgorithm::Eia2,
+        SELECTED_EEA,
+        SELECTED_EIA,
         0,                // NAS KSI
         &[0x20, 0x40],    // replayed UE security capabilities
     );
@@ -167,6 +188,12 @@ pub fn handle_auth_response(
 // ── Step 3: SecurityModeComplete ─────────────────────────────────────────────
 
 /// On SecurityModeComplete, allocate bearer resources and send AttachAccept.
+///
+/// NAS security activates here: Kasme is derived from CK/IK, NAS session
+/// keys are derived from Kasme for [`SELECTED_EEA`]/[`SELECTED_EIA`] (the
+/// pair already advertised in SecurityModeCommand), and AttachAccept — the
+/// first message sent after this point — goes out as a protected envelope
+/// rather than plain NAS.
 pub fn handle_security_mode_complete(
     world:           &mut World,
     enb_ue_s1ap_id:  u32,
@@ -181,16 +208,23 @@ pub fn handle_security_mode_complete(
             return (vec![], vec![]);
         }
     };
-    let imsi   = ctx.imsi;
-    let ue_ip  = ctx.ue_ip;
+    let imsi  = ctx.imsi;
+    let ue_ip = ctx.ue_ip;
 
-    let attach_accept_nas = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
+    let kasme = derive_kasme(&ctx.ck, &ctx.ik);
+    let mut nas_security = NasSecurityContext::new(&kasme, SELECTED_EEA, SELECTED_EIA);
+
+    let attach_accept_plain = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
+    let attach_accept_nas = encode_protected(
+        &mut nas_security, SHT_INTEGRITY_CIPHERED, NAS_BEARER, &attach_accept_plain,
+    );
 
     if let Some(_upf_addr) = phase3_upf {
         let ul_teid = teid_allocator.alloc();
 
         world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
-            ul_teid: Some(ul_teid),
+            ul_teid:      Some(ul_teid),
+            nas_security: Some(nas_security),
             ..ctx
         });
         world.insert_session_state(mme_ue_s1ap_id, SessionState { imsi, ul_teid });
@@ -211,7 +245,7 @@ pub fn handle_security_mode_complete(
             }],
             nas_pdu: Some(attach_accept_nas),
             ue_ambr: (50_000_000, 50_000_000),
-            security_key: derive_kasme(&ctx.ck, &ctx.ik),
+            security_key: kasme,
         });
 
         let evt = UpfEvent::CreateSession {
@@ -225,6 +259,10 @@ pub fn handle_security_mode_complete(
         (vec![icsr], vec![evt])
 
     } else {
+        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
+            nas_security: Some(nas_security),
+            ..ctx
+        });
         let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
             enb_ue_s1ap_id,
             mme_ue_s1ap_id,
@@ -249,9 +287,14 @@ pub fn handle_attach_complete(
 
 /// Minimal Kasme derivation placeholder (CK ∥ IK).
 /// Replace with TS 33.401 §A.2 KDF when hardening security.
-fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
+///
+/// `pub(crate)`: also called from `mme::state_machine`'s tests to
+/// independently re-derive Kasme when simulating a UE-side protected NAS
+/// envelope (mirrors what a real UE does — both sides compute Kasme from
+/// CK/IK, which AKA gives identically to UE and network).
+pub(crate) fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
     let mut key = [0u8; 32];
     key[..16].copy_from_slice(ck);
     key[16..].copy_from_slice(ik);
     key
-        }
+            }
