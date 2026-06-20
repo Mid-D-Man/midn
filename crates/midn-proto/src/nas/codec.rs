@@ -480,7 +480,11 @@ pub fn encode_detach_accept() -> Bytes {
 //
 // Generic wrapper/unwrapper for any plain NAS PDU bytes (the output of any
 // `encode_*` function above), backed by `nas::security::NasSecurityContext`.
-// Not yet called from `midn_core::mme` — see security.rs module docs.
+// Called from `midn_core::mme::attach::handle_security_mode_complete`
+// (encode_protected, for AttachAccept) and `Mme::handle_uplink_nas`
+// (decode_protected, for any post-security uplink message — auto-detected
+// via the security header type nibble) — see `nas::security` module docs
+// for the activation point and what's still simplified.
 
 /// Wrap an already-built plain NAS message in a protected envelope
 /// (MME → UE direction — uses `NasSecurityContext::protect_downlink`).
