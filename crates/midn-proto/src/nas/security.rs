@@ -10,16 +10,26 @@
 //!   - **NAS key derivation** (TS 33.401 Annex A.7): HMAC-SHA-256(Kasme, S),
 //!     taking the 128 *least* significant bits of the 256-bit output.
 //!
-//! ## What this module does NOT do (yet)
+//! ## Wiring status
 //!
-//! - It is not wired into `midn_core::mme` — the attach flow still exchanges
-//!   plain NAS PDUs. Wiring `NasSecurityContext` into `Mme::process_s1ap` so
-//!   AttachAccept/AttachComplete/Detach actually travel ciphered is the next
-//!   increment, kept separate so it doesn't touch the passing attach tests.
+//! As of the "Wire NAS security into MME" increment, this IS used by
+//! `midn_core::mme::attach::handle_security_mode_complete` (derives the
+//! context from CK/IK and protects AttachAccept) and `Mme::handle_uplink_nas`
+//! (auto-detects + unwraps any protected uplink message via the security
+//! header type nibble). See `nas::codec::{encode_protected, decode_protected}`
+//! for the wire envelope this rides in.
+//!
+//! Still simplified / not yet done:
 //! - `Kasme` itself is still the placeholder `CK ‖ IK` concatenation from
 //!   `midn_core::mme::attach::derive_kasme` (flagged there already as needing
-//!   the real TS 33.401 §A.2 KDF). This module takes whatever 32-byte Kasme
-//!   it's given and is correct *given* a correct Kasme.
+//!   the real TS 33.401 §A.2 KDF). This module is correct *given* a correct
+//!   Kasme, but the input it's fed today isn't the real one.
+//! - SecurityModeCommand/SecurityModeComplete remain plain NAS — NAS
+//!   security activates starting with AttachAccept (the first message sent
+//!   after SecurityModeComplete is verified). Real 3GPP also
+//!   integrity-protects SecurityModeCommand itself (with the "new EPS
+//!   security context" header type, unciphered); modeling that split is a
+//!   separate, smaller increment if you want it later.
 //! - No official 3GPP TS 35.216/35.217 test vectors are hardcoded below —
 //!   see the `#[ignore]` stub at the bottom. Hand-typing crypto constants
 //!   from memory and having them silently "pass" is worse than not having
@@ -221,10 +231,12 @@ pub struct ProtectedNas {
 /// on unprotect — MAC-I covers the ciphertext, and a message is never
 /// deciphered before its integrity is confirmed.
 ///
-/// Keys are zeroized on drop; `eea`/`eia`/counts are not secret and are
-/// skipped (counts are harmless to zero, but the enum fields don't implement
-/// `Zeroize`).
-#[derive(Zeroize, ZeroizeOnDrop)]
+/// Keys are zeroized on drop. `Clone` is provided so `Mme`'s
+/// clone-mutate-reinsert pattern for `AttachContext` (see
+/// `midn_core::mme::state_machine::World::get_attach_context`) keeps working
+/// once this is embedded in it — same tradeoff already accepted for
+/// `AuthKey`/`OpCode` elsewhere in the workspace.
+#[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct NasSecurityContext {
     pub k_nas_enc: [u8; 16],
     pub k_nas_int: [u8; 16],
@@ -309,6 +321,21 @@ impl NasSecurityContext {
             eea2_apply(&self.k_nas_enc, count, bearer, dir, &mut payload);
         }
         Some(payload)
+    }
+}
+
+impl core::fmt::Debug for NasSecurityContext {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Never print k_nas_enc/k_nas_int — they're session secrets, same
+        // redaction pattern as AuthVector in midn-auth.
+        f.debug_struct("NasSecurityContext")
+            .field("eea", &self.eea)
+            .field("eia", &self.eia)
+            .field("dl_count", &self.dl_count)
+            .field("ul_count", &self.ul_count)
+            .field("k_nas_enc", &"[REDACTED]")
+            .field("k_nas_int", &"[REDACTED]")
+            .finish()
     }
 }
 
@@ -542,4 +569,4 @@ mod tests {
         // as midn-auth::milenage's test_set_4..6.
         todo!()
     }
-              }
+    }
