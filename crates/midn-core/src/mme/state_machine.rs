@@ -4,9 +4,9 @@
 //! ## Phase modes
 //!
 //! | Mode    | Trigger                  | SecModeComplete response          |
-//! |---------|--------------------------|-----------------------------------|
-//! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept)|
-//! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest        |
+//! |---------|--------------------------|------------------------------------|
+//! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept) |
+//! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest         |
 //!
 //! ## TEID lifecycle
 //!
@@ -17,8 +17,22 @@
 //! `handle_release_complete` once `UeContextReleaseComplete` confirms the
 //! eNodeB has actually torn down the radio context — whether that release was
 //! triggered by the network or by `mme::detach::handle_detach_request`.
+//!
+//! ## NAS security
+//!
+//! `AttachContext::nas_security` holds the per-subscriber
+//! `NasSecurityContext` once it's created (in
+//! `attach::handle_security_mode_complete` — see that function and
+//! `nas::security` module docs for the activation point). `handle_uplink_nas`
+//! auto-detects protected vs plain uplink NAS PDUs from the security header
+//! type nibble (octet 1, high nibble) and transparently unwraps protected
+//! ones before dispatching — callers/tests that still send plain bytes for
+//! later messages (AttachComplete, Detach) are unaffected.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+
+use midn_proto::nas::NasSecurityContext;
 
 use crate::s1ap::S1apMessage;
 use crate::hss::Hss;
@@ -43,6 +57,9 @@ pub struct AttachContext {
     pub sqn_used:       [u8; 6],
     pub ue_ip:          [u8; 4],
     pub ul_teid:        Option<u32>,
+    /// NAS security context for this subscriber — `None` until
+    /// `attach::handle_security_mode_complete` creates it. See module docs.
+    pub nas_security:   Option<NasSecurityContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -273,15 +290,49 @@ impl Mme {
         mme_ue_s1ap_id: u32,
         nas_pdu: &[u8],
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-        use midn_proto::nas::{decode_nas, NasPdu};
-        match decode_nas(nas_pdu) {
+        use midn_proto::nas::{decode_nas, decode_protected, NasPdu, NAS_BEARER, SHT_PLAIN};
+
+        // Detect a protected envelope vs a plain PDU from the security header
+        // type in the high nibble of octet 1 (see nas::codec module docs).
+        // Plain messages (AuthenticationResponse, SecurityModeComplete — sent
+        // before NAS security activates) and a mock UE that still sends later
+        // messages plain both take the fast path straight into decode_nas,
+        // exactly as before NAS security was wired in.
+        let sht = nas_pdu.first().map(|b| (*b >> 4) & 0x0F).unwrap_or(0);
+
+        let plain_pdu: Cow<[u8]> = if sht == SHT_PLAIN {
+            Cow::Borrowed(nas_pdu)
+        } else {
+            let nas_ctx = match self.world
+                .get_attach_context_mut(mme_ue_s1ap_id)
+                .and_then(|ctx| ctx.nas_security.as_mut())
+            {
+                Some(c) => c,
+                None => {
+                    tracing::warn!(
+                        mme_ue_s1ap_id,
+                        "UplinkNasTransport: protected PDU received but no NAS security context exists"
+                    );
+                    return (vec![], vec![]);
+                }
+            };
+            match decode_protected(nas_ctx, nas_pdu, NAS_BEARER) {
+                Some(inner) => Cow::Owned(inner),
+                None => {
+                    tracing::warn!(mme_ue_s1ap_id, "UplinkNasTransport: NAS integrity check failed — dropping");
+                    return (vec![], vec![]);
+                }
+            }
+        };
+
+        match decode_nas(&plain_pdu) {
             Ok(NasPdu::AuthenticationResponse(..)) => {
                 attach::handle_auth_response(
                     &mut self.world,
                     &self.registry,
                     enb_ue_s1ap_id,
                     mme_ue_s1ap_id,
-                    nas_pdu,
+                    &plain_pdu,
                 )
             }
             Ok(NasPdu::SecurityModeComplete) => {
@@ -298,7 +349,7 @@ impl Mme {
             }
             Ok(NasPdu::DetachRequest(..)) => {
                 let responses = detach::handle_detach_request(
-                    &self.world, enb_ue_s1ap_id, mme_ue_s1ap_id, nas_pdu,
+                    &mut self.world, enb_ue_s1ap_id, mme_ue_s1ap_id, &plain_pdu,
                 );
                 (responses, vec![])
             }
@@ -403,6 +454,7 @@ mod tests {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
             rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
             sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
+            nas_security: None,
         });
         w.insert_session_state(e, SessionState { imsi: 1, ul_teid: 0x0001_0000 });
         w.insert_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0;4] });
@@ -418,6 +470,7 @@ mod tests {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
             rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
             sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
+            nas_security: None,
         });
         w.despawn(e);
         assert!(w.get_attach_context(e).is_none());
@@ -607,7 +660,7 @@ mod tests {
                 assert!(!icsr.e_rabs.is_empty());
                 assert_eq!(icsr.e_rabs[0].transport_layer_addr, upf_addr,
                     "E-RAB transport addr must point at UPF");
-                assert!(icsr.nas_pdu.is_some(), "AttachAccept must be embedded");
+                assert!(icsr.nas_pdu.is_some(), "AttachAccept must be embedded (now protected)");
                 u32::from_be_bytes(icsr.e_rabs[0].gtp_teid)
             }
             _ => panic!("step 3: expected InitialContextSetupRequest"),
@@ -661,6 +714,11 @@ mod tests {
         assert_eq!(tunnel.ul_teid,  ul_teid);
 
         // ── Step 5: AttachComplete → subscriber online ────────────────────────
+        //
+        // Sent PLAIN here (mock UE doesn't bother protecting it) — the
+        // dispatcher auto-detects sht=0 and takes the unchanged plain path.
+        // See phase3_attach_complete_via_protected_nas_envelope below for the
+        // protected-envelope version of this same step.
 
         let (responses, events) = mme.process_s1ap(
             S1apMessage::UplinkNasTransport(UplinkNasTransport {
@@ -790,14 +848,14 @@ mod tests {
         };
         assert_eq!(mme.free_teid_count(), 0, "freshly allocated TEID is not free");
 
-        // ── UE sends DetachRequest ────────────────────────────────────────────
+        // ── UE sends DetachRequest (plain — exercises the sht=0 fast path) ────
 
         let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
             enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
             nas_pdu: encode_detach_request(1, false, 0, &[0; 10]),
             tai: [0; 5], eutran_cgi: [0; 7],
         })).await;
-        assert_eq!(responses.len(), 2, "expect DetachAccept + UeContextReleaseCommand");
+        assert_eq!(responses.len(), 2, "expect DetachAccept (now protected) + UeContextReleaseCommand");
         assert!(events.is_empty(), "no UpfEvent until UeContextReleaseComplete");
         assert!(matches!(responses[1], S1apMessage::UeContextReleaseCommand { .. }));
 
@@ -854,4 +912,96 @@ mod tests {
         assert_eq!(ul_teid2, ul_teid, "second subscriber recycles first subscriber's freed TEID");
         assert_eq!(mme.free_teid_count(), 0);
     }
-        }
+
+    // ── NAS security: protected AttachComplete, wired end-to-end ─────────────
+
+    #[tokio::test]
+    async fn phase3_attach_complete_via_protected_nas_envelope() {
+        use midn_auth::MilenageContext;
+        use midn_proto::nas::{
+            decode_nas, derive_nas_keys, eea2_apply, eia2_compute_mac,
+            encode_attach_complete, encode_attach_request, encode_auth_response,
+            encode_sec_mode_complete, Direction, NasEeaAlgorithm, NasEiaAlgorithm,
+            NasPdu, NAS_BEARER, NAS_EPS_MM_PD, SHT_INTEGRITY_CIPHERED,
+        };
+        use midn_proto::s1ap::{InitialUeMessage, S1apMessage, UplinkNasTransport};
+
+        let k_buf: [u8; 16] = [
+            0x46, 0x5b, 0x5c, 0xe8, 0xb1, 0x99, 0xb4, 0x9f,
+            0xaa, 0x5f, 0x0a, 0x2e, 0xe2, 0x38, 0xa6, 0xbc,
+        ];
+        let opc_buf: [u8; 16] = [
+            0xcd, 0x63, 0xcb, 0x71, 0x95, 0x4a, 0x9f, 0x4e,
+            0x48, 0xa5, 0x99, 0x4e, 0x37, 0xa0, 0x2b, 0xaf,
+        ];
+        let imsi     = 234_15_0007770001_u64;
+        let upf_addr = [127u8, 0, 0, 1];
+        let enb_id   = 0x0003_0001_u32;
+
+        let mut mme = Mme::new().with_phase3(upf_addr);
+        mme.hss.provision(imsi, AuthKey(k_buf), OpCode(opc_buf));
+        let milenage = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
+
+        // ── Drive through attach far enough to activate NAS security ──────────
+        // (steps 1-3, same shape as phase3_full_attach_procedure)
+
+        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {
+            enb_ue_s1ap_id: enb_id,
+            nas_pdu:        encode_attach_request(imsi, 1, 0),
+            tai: [0; 5], eutran_cgi: [0; 7], rrc_cause: 1,
+        })).await;
+        let (mme_ue_id, auth_req_pdu) = match &responses[0] {
+            S1apMessage::DownlinkNasTransport(m) => (m.mme_ue_s1ap_id, m.nas_pdu.clone()),
+            _ => panic!("expected DownlinkNasTransport"),
+        };
+        let rand_bytes = match decode_nas(&auth_req_pdu).unwrap() {
+            NasPdu::AuthenticationRequest(d) => d.rand,
+            _ => panic!("expected AuthReq"),
+        };
+        let av = milenage.generate_vector_with_rand(
+            Sqn::from_bytes(&[0u8; 6]), Amf([0x80, 0x00]), Rand(rand_bytes),
+        );
+        mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: encode_auth_response(&av.res),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+        mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: encode_sec_mode_complete(),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+
+        // ── Build a protected AttachComplete, exactly as a real UE would ──────
+        //
+        // The MME never exposes its NasSecurityContext to test code — this
+        // independently re-derives the SAME Kasme and NAS keys the MME just
+        // derived internally (both sides compute Kasme from CK/IK, which AKA
+        // gives identically to UE and network), proving the wiring in
+        // `attach::handle_security_mode_complete` produces a context a real
+        // UE could interoperate with.
+        let kasme = crate::mme::attach::derive_kasme(&av.ck, &av.ik);
+        let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
+
+        let attach_complete_plain = encode_attach_complete();
+        let count = 0u32; // first protected message this UE sends
+        let mut ciphertext = attach_complete_plain.to_vec();
+        eea2_apply(&k_enc, count, NAS_BEARER, Direction::Uplink, &mut ciphertext);
+        let mac_i = eia2_compute_mac(&k_int, count, NAS_BEARER, Direction::Uplink, &ciphertext);
+
+        let mut envelope = vec![(SHT_INTEGRITY_CIPHERED << 4) | NAS_EPS_MM_PD];
+        envelope.extend_from_slice(&mac_i);
+        envelope.push(count as u8);
+        envelope.extend_from_slice(&ciphertext);
+
+        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
+            enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
+            nas_pdu: envelope.into(),
+            tai: [0; 5], eutran_cgi: [0; 7],
+        })).await;
+
+        assert!(responses.is_empty(), "AttachComplete is silent, protected or not");
+        assert!(events.is_empty());
+        assert_eq!(mme.subscriber_count(), 1, "subscriber should still be online after protected AttachComplete");
+    }
+    }
