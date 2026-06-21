@@ -21,6 +21,16 @@
 //! see [`SELECTED_EEA`]/[`SELECTED_EIA`] and `nas::security` module docs for
 //! the simplification (SecurityModeCommand/Complete stay plain; AttachAccept
 //! is the first protected message).
+//!
+//! ## Kasme derivation
+//!
+//! Kasme is derived via `crate::kdf::derive_kasme` (TS 33.401 Annex A.2),
+//! which needs the serving network identity (PLMN) and SQN ⊕ AK as inputs
+//! on top of CK/IK. PLMN comes from the S1AP `tai` field on
+//! `InitialUeMessage` (TAI = PLMN(3) ‖ TAC(2)) — captured in `start_attach`
+//! and stored on `AttachContext`. SQN ⊕ AK is computed in
+//! `handle_security_mode_complete` from `ctx.sqn_used` and `ctx.ak`, both
+//! also captured in `start_attach`.
 
 use midn_auth::MilenageContext;
 use midn_proto::nas::{
@@ -33,6 +43,7 @@ use midn_proto::s1ap::{
 };
 
 use crate::hss::Hss;
+use crate::kdf::derive_kasme;
 use crate::mme::state_machine::{
     AttachContext, ImsiRegistry, SessionState, TeidAllocator, TunnelComponent, UpfEvent, World,
 };
@@ -70,13 +81,20 @@ pub enum AttachError {
 // ── Step 1: AttachRequest ─────────────────────────────────────────────────────
 
 /// Process an `InitialUeMessage` whose NAS PDU is an `AttachRequest`.
+///
+/// `tai` is the S1AP Tracking Area Identity (PLMN(3) ‖ TAC(2)) — the first
+/// 3 bytes are the serving network PLMN, stored on `AttachContext` for the
+/// Kasme KDF call in `handle_security_mode_complete`.
 pub fn start_attach(
     world:          &mut World,
     registry:       &mut ImsiRegistry,
     hss:            &mut Hss,
     enb_ue_s1ap_id: u32,
     nas_pdu:        &[u8],
+    tai:            [u8; 5],
 ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
+    let plmn = [tai[0], tai[1], tai[2]];
+
     // Decode AttachRequest from the NAS PDU.
     let (imsi, ue_ip): (u64, Option<[u8; 4]>) = match decode_nas(nas_pdu) {
         Ok(NasPdu::AttachRequest(inner)) => match inner.imsi {
@@ -116,6 +134,8 @@ pub fn start_attach(
         xres:         auth_info.vector.res,
         ck:           auth_info.vector.ck,
         ik:           auth_info.vector.ik,
+        ak:           auth_info.vector.ak,
+        plmn,
         sqn_used:     auth_info.sqn_used,
         ue_ip:        ue_ip.unwrap_or([0; 4]),
         ul_teid:      None,
@@ -189,11 +209,12 @@ pub fn handle_auth_response(
 
 /// On SecurityModeComplete, allocate bearer resources and send AttachAccept.
 ///
-/// NAS security activates here: Kasme is derived from CK/IK, NAS session
-/// keys are derived from Kasme for [`SELECTED_EEA`]/[`SELECTED_EIA`] (the
-/// pair already advertised in SecurityModeCommand), and AttachAccept — the
-/// first message sent after this point — goes out as a protected envelope
-/// rather than plain NAS.
+/// NAS security activates here: Kasme is derived from CK/IK + PLMN +
+/// SQN ⊕ AK via `crate::kdf::derive_kasme` (TS 33.401 Annex A.2), NAS
+/// session keys are derived from Kasme for [`SELECTED_EEA`]/[`SELECTED_EIA`]
+/// (the pair already advertised in SecurityModeCommand), and AttachAccept —
+/// the first message sent after this point — goes out as a protected
+/// envelope rather than plain NAS.
 pub fn handle_security_mode_complete(
     world:           &mut World,
     enb_ue_s1ap_id:  u32,
@@ -211,7 +232,11 @@ pub fn handle_security_mode_complete(
     let imsi  = ctx.imsi;
     let ue_ip = ctx.ue_ip;
 
-    let kasme = derive_kasme(&ctx.ck, &ctx.ik);
+    let mut sqn_xor_ak = [0u8; 6];
+    for i in 0..6 {
+        sqn_xor_ak[i] = ctx.sqn_used[i] ^ ctx.ak[i];
+    }
+    let kasme = derive_kasme(&ctx.ck, &ctx.ik, &ctx.plmn, &sqn_xor_ak);
     let mut nas_security = NasSecurityContext::new(&kasme, SELECTED_EEA, SELECTED_EIA);
 
     let attach_accept_plain = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
@@ -281,20 +306,4 @@ pub fn handle_attach_complete(
 ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
     tracing::info!(mme_ue_s1ap_id, "AttachComplete — subscriber online");
     (vec![], vec![])
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-/// Minimal Kasme derivation placeholder (CK ∥ IK).
-/// Replace with TS 33.401 §A.2 KDF when hardening security.
-///
-/// `pub(crate)`: also called from `mme::state_machine`'s tests to
-/// independently re-derive Kasme when simulating a UE-side protected NAS
-/// envelope (mirrors what a real UE does — both sides compute Kasme from
-/// CK/IK, which AKA gives identically to UE and network).
-pub(crate) fn derive_kasme(ck: &[u8; 16], ik: &[u8; 16]) -> [u8; 32] {
-    let mut key = [0u8; 32];
-    key[..16].copy_from_slice(ck);
-    key[16..].copy_from_slice(ik);
-    key
-            }
+                }
