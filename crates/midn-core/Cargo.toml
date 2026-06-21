@@ -12,6 +12,8 @@ thiserror  = "1"
 tracing    = "0.1"
 hex        = "0.4"
 tokio      = { version = "1", features = ["rt", "sync", "macros"] }
+hmac       = "0.12"   # Kasme KDF — crates/midn-core/src/kdf.rs
+sha2       = "0.10"   # Kasme KDF — crates/midn-core/src/kdf.rs
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
