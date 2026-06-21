@@ -23,11 +23,15 @@
 //! `AttachContext::nas_security` holds the per-subscriber
 //! `NasSecurityContext` once it's created (in
 //! `attach::handle_security_mode_complete` — see that function and
-//! `nas::security` module docs for the activation point). `handle_uplink_nas`
-//! auto-detects protected vs plain uplink NAS PDUs from the security header
-//! type nibble (octet 1, high nibble) and transparently unwraps protected
-//! ones before dispatching — callers/tests that still send plain bytes for
-//! later messages (AttachComplete, Detach) are unaffected.
+//! `nas::security` module docs for the activation point). Kasme is derived
+//! via `crate::kdf::derive_kasme` (TS 33.401 Annex A.2), using
+//! `AttachContext::plmn` (captured from S1AP `tai` in `start_attach`) and
+//! `AttachContext::ak` (the Milenage f5 output, combined with `sqn_used` as
+//! SQN ⊕ AK). `handle_uplink_nas` auto-detects protected vs plain uplink NAS
+//! PDUs from the security header type nibble (octet 1, high nibble) and
+//! transparently unwraps protected ones before dispatching — callers/tests
+//! that still send plain bytes for later messages (AttachComplete, Detach)
+//! are unaffected.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -54,6 +58,14 @@ pub struct AttachContext {
     pub xres:           [u8; 8],
     pub ck:             [u8; 16],
     pub ik:             [u8; 16],
+    /// Milenage f5 output (AK) for this auth attempt. Combined with
+    /// `sqn_used` (SQN ⊕ AK) as a Kasme KDF input — see
+    /// `crate::kdf::derive_kasme` and `mme::attach` module docs.
+    pub ak:             [u8; 6],
+    /// Serving network identity (PLMN-Id, 3 octets) — captured from the
+    /// S1AP `tai` field on `InitialUeMessage` (TAI = PLMN(3) ‖ TAC(2)).
+    /// Used as a Kasme KDF input (TS 33.401 Annex A.2).
+    pub plmn:           [u8; 3],
     pub sqn_used:       [u8; 6],
     pub ue_ip:          [u8; 4],
     pub ul_teid:        Option<u32>,
@@ -269,6 +281,7 @@ impl Mme {
                     &mut self.hss,
                     m.enb_ue_s1ap_id,
                     &m.nas_pdu,
+                    m.tai,
                 )
             }
             UplinkNasTransport(m) => {
@@ -453,6 +466,7 @@ mod tests {
         w.insert_attach_context(e, AttachContext {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
             rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
+            ak: [0;6], plmn: [0;3],
             sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
             nas_security: None,
         });
@@ -469,6 +483,7 @@ mod tests {
         w.insert_attach_context(e, AttachContext {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
             rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
+            ak: [0;6], plmn: [0;3],
             sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
             nas_security: None,
         });
@@ -976,11 +991,13 @@ mod tests {
         //
         // The MME never exposes its NasSecurityContext to test code — this
         // independently re-derives the SAME Kasme and NAS keys the MME just
-        // derived internally (both sides compute Kasme from CK/IK, which AKA
-        // gives identically to UE and network), proving the wiring in
-        // `attach::handle_security_mode_complete` produces a context a real
-        // UE could interoperate with.
-        let kasme = crate::mme::attach::derive_kasme(&av.ck, &av.ik);
+        // derived internally. SQN=0 for this subscriber's first auth attempt,
+        // so SQN ⊕ AK == AK. PLMN matches the all-zero `tai` this test's
+        // InitialUeMessage sent, which `start_attach` reads into
+        // AttachContext::plmn — both sides land on the same Kasme input.
+        let mut sqn_xor_ak = [0u8; 6];
+        sqn_xor_ak.copy_from_slice(&av.ak);
+        let kasme = crate::kdf::derive_kasme(&av.ck, &av.ik, &[0, 0, 0], &sqn_xor_ak);
         let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
 
         let attach_complete_plain = encode_attach_complete();
@@ -1004,4 +1021,4 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(mme.subscriber_count(), 1, "subscriber should still be online after protected AttachComplete");
     }
-    }
+            }
