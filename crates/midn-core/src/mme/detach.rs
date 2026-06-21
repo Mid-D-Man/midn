@@ -113,6 +113,7 @@ mod tests {
         w.insert_attach_context(entity, AttachContext {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: entity,
             rand: [0; 16], xres: [0; 8], ck: [0; 16], ik: [0; 16],
+            ak: [0; 6], plmn: [0; 3],
             sqn_used: [0; 6], ue_ip: [0; 4], ul_teid: None,
             nas_security: None,
         });
@@ -174,6 +175,7 @@ mod tests {
         world.insert_attach_context(entity, AttachContext {
             imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: entity,
             rand: [0; 16], xres: [0; 8], ck: [0; 16], ik: [0; 16],
+            ak: [0; 6], plmn: [0; 3],
             sqn_used: [0; 6], ue_ip: [0; 4], ul_teid: None,
             nas_security: Some(NasSecurityContext::new(
                 &kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2,
@@ -206,4 +208,4 @@ mod tests {
         eea2_apply(&k_enc, count, NAS_BEARER, Direction::Downlink, &mut ciphertext);
         assert!(matches!(decode_nas(&ciphertext).unwrap(), NasPdu::DetachAccept));
     }
-                                                   }
+        }
