@@ -1,3 +1,4 @@
+# crates/midn-auth/Cargo.toml
 [package]
 name    = "midn-auth"
 version = "0.1.0"
@@ -13,6 +14,7 @@ subtle  = "2.5"
 rand    = { version = "0.8", features = ["getrandom"] }
 hex     = "0.4"
 aes     = { version = "0.8", features = ["zeroize"] }   # AES-128 for Milenage f1..f5
+keccak  = "0.1"                                          # Keccak-f[1600] permutation for TUAK
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
