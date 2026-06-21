@@ -9,11 +9,13 @@
 //! | UpfEvent       | `midn_core::UpfEvent`        |
 //! | Hss            | `midn_core::hss::Hss`        |
 //! | HssAuthInfo    | `midn_core::hss::HssAuthInfo`|
+//! | kdf            | `midn_core::kdf` (Kasme derivation, TS 33.401 Annex A.2) |
 //!
 //! S1AP types are re-exported as `crate::s1ap` within this crate (backed by
 //! `midn_proto::s1ap`).  External users import directly from `midn_proto`.
 
 pub mod hss;
+pub mod kdf;
 pub mod mme;
 
 /// Thin re-export so every module inside midn-core can write
