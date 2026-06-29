@@ -44,9 +44,8 @@ use midn_proto::s1ap::{
 
 use crate::hss::Hss;
 use crate::kdf::derive_kasme;
-use crate::mme::state_machine::{
-    AttachContext, ImsiRegistry, SessionState, TeidAllocator, TunnelComponent, UpfEvent, World,
-};
+use midn_ecs::{AuthFailReason, AuthState, IdentityComponent, ImsiRegistry, SecurityContext, TunnelComponent, World};
+use crate::mme::state_machine::{TeidAllocator, UpfEvent};
 
 // ── AMF constant ──────────────────────────────────────────────────────────────
 
@@ -125,22 +124,22 @@ pub fn start_attach(
     let entity = world.spawn();
     registry.register(imsi, entity);
 
-    // Store per-UE attach state as an ECS component.
-    world.insert_attach_context(entity, AttachContext {
+    world.insert_identity(entity, IdentityComponent {
         imsi,
         enb_ue_s1ap_id,
-        mme_ue_s1ap_id: entity,
-        rand:         auth_info.rand,
-        xres:         auth_info.vector.res,
-        ck:           auth_info.vector.ck,
-        ik:           auth_info.vector.ik,
-        ak:           auth_info.vector.ak,
-        plmn,
-        sqn_used:     auth_info.sqn_used,
-        ue_ip:        ue_ip.unwrap_or([0; 4]),
-        ul_teid:      None,
-        nas_security: None,
+        ue_ip: ue_ip.unwrap_or([0; 4]),
     });
+
+    let mut sec = SecurityContext::new_empty();
+    sec.pending_rand = auth_info.rand;
+    sec.pending_xres = auth_info.vector.res;
+    sec.ck           = auth_info.vector.ck;
+    sec.ik           = auth_info.vector.ik;
+    sec.ak           = auth_info.vector.ak;
+    sec.plmn         = plmn;
+    sec.sqn_used     = auth_info.sqn_used;
+    world.insert_security(entity, sec);
+    world.set_auth_state(entity, AuthState::ChallengeIssued);
 
     // Encode NAS AuthenticationRequest PDU (NAS KSI = 0 for simulation).
     let nas = encode_auth_request(0, &auth_info.rand, &autn);
@@ -172,20 +171,26 @@ pub fn handle_auth_response(
         }
     };
 
-    // Look up the attach context.
-    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {
-        Some(c) => c,
+    let xres = match world.security(mme_ue_s1ap_id) {
+        Some(sec) => sec.pending_xres,
         None => {
-            tracing::warn!(mme_ue_s1ap_id, "handle_auth_response: no context");
+            tracing::warn!(mme_ue_s1ap_id, "handle_auth_response: no security context");
             return (vec![], vec![]);
         }
     };
 
-    // Constant-time RES verification (f2 output vs UE response).
-    if !MilenageContext::verify_res(&ctx.xres, &res_arr) {
+    let matched = MilenageContext::verify_res(&xres, &res_arr);
+
+    if let Some(sec) = world.security_mut(mme_ue_s1ap_id) {
+        sec.clear_pending_challenge();
+    }
+
+    if !matched {
+        world.set_auth_state(mme_ue_s1ap_id, AuthState::Failed(AuthFailReason::ResMismatch));
         tracing::warn!(mme_ue_s1ap_id, "handle_auth_response: RES mismatch");
         return (vec![], vec![]);
     }
+    world.set_auth_state(mme_ue_s1ap_id, AuthState::Authenticated);
 
     // RES verified — issue SecurityModeCommand, proposing the algorithm pair
     // this simulation always selects. Sent PLAIN: NAS security activates one
@@ -222,21 +227,33 @@ pub fn handle_security_mode_complete(
     phase3_upf:      Option<[u8; 4]>,
     teid_allocator:  &mut TeidAllocator,
 ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
-    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {
-        Some(c) => c,
+    let identity = match world.identity(mme_ue_s1ap_id) {
+        Some(i) => i.clone(),
         None => {
-            tracing::warn!(mme_ue_s1ap_id, "handle_sec_mode_complete: no context");
+            tracing::warn!(mme_ue_s1ap_id, "handle_sec_mode_complete: no identity component");
             return (vec![], vec![]);
         }
     };
-    let imsi  = ctx.imsi;
-    let ue_ip = ctx.ue_ip;
+    let imsi  = identity.imsi;
+    let ue_ip = identity.ue_ip;
+
+    let (ck, ik, ak, plmn, sqn_used) = match world.security(mme_ue_s1ap_id) {
+        Some(sec) => (sec.ck, sec.ik, sec.ak, sec.plmn, sec.sqn_used),
+        None => {
+            tracing::warn!(mme_ue_s1ap_id, "handle_sec_mode_complete: no security context");
+            return (vec![], vec![]);
+        }
+    };
 
     let mut sqn_xor_ak = [0u8; 6];
     for i in 0..6 {
-        sqn_xor_ak[i] = ctx.sqn_used[i] ^ ctx.ak[i];
+        sqn_xor_ak[i] = sqn_used[i] ^ ak[i];
     }
-    let kasme = derive_kasme(&ctx.ck, &ctx.ik, &ctx.plmn, &sqn_xor_ak);
+    let kasme = derive_kasme(&ck, &ik, &plmn, &sqn_xor_ak);
+
+    if let Some(sec) = world.security_mut(mme_ue_s1ap_id) {
+        sec.clear_post_kasme();
+    }
     let mut nas_security = NasSecurityContext::new(&kasme, SELECTED_EEA, SELECTED_EIA);
 
     let attach_accept_plain = encode_attach_accept(1, 0x54, &[], Some(ue_ip), None);
@@ -247,13 +264,8 @@ pub fn handle_security_mode_complete(
     if let Some(_upf_addr) = phase3_upf {
         let ul_teid = teid_allocator.alloc();
 
-        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
-            ul_teid:      Some(ul_teid),
-            nas_security: Some(nas_security),
-            ..ctx
-        });
-        world.insert_session_state(mme_ue_s1ap_id, SessionState { imsi, ul_teid });
-        world.insert_tunnel(mme_ue_s1ap_id, TunnelComponent {
+        world.set_nas_security(mme_ue_s1ap_id, nas_security);
+        world.set_tunnel(mme_ue_s1ap_id, TunnelComponent {
             ul_teid,
             dl_teid: 0,
             enb_addr: [0; 4],
@@ -284,10 +296,7 @@ pub fn handle_security_mode_complete(
         (vec![icsr], vec![evt])
 
     } else {
-        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {
-            nas_security: Some(nas_security),
-            ..ctx
-        });
+        world.set_nas_security(mme_ue_s1ap_id, nas_security);
         let dl = S1apMessage::DownlinkNasTransport(DownlinkNasTransport {
             enb_ue_s1ap_id,
             mme_ue_s1ap_id,

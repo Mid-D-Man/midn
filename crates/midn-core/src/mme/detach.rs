@@ -29,7 +29,7 @@ use midn_proto::nas::{
 };
 use midn_proto::s1ap::{DownlinkNasTransport, S1apCause, S1apMessage};
 
-use crate::mme::state_machine::World;
+use midn_ecs::World;
 
 /// Process an `UplinkNasTransport` whose NAS PDU is a `DetachRequest`.
 ///
@@ -54,7 +54,7 @@ pub fn handle_detach_request(
         }
     };
 
-    if world.get_attach_context(mme_ue_s1ap_id).is_none() {
+    if !world.is_live(mme_ue_s1ap_id) {
         tracing::warn!(mme_ue_s1ap_id, "handle_detach_request: no context for entity");
         return vec![];
     }
@@ -70,10 +70,7 @@ pub fn handle_detach_request(
         // by the time a detach happens, attach should already have completed
         // SecurityModeComplete, so this is normally always Some. Falls back
         // to plain only as a defensive no-context case.
-        let nas_pdu_out = match world
-            .get_attach_context_mut(mme_ue_s1ap_id)
-            .and_then(|c| c.nas_security.as_mut())
-        {
+        let nas_pdu_out = match world.nas_security_mut(mme_ue_s1ap_id) {
             Some(nas_ctx) => encode_protected(
                 nas_ctx, SHT_INTEGRITY_CIPHERED, NAS_BEARER, &detach_accept_plain,
             ),

@@ -34,9 +34,8 @@
 //! are unaffected.
 
 use std::borrow::Cow;
-use std::collections::HashMap;
 
-use midn_proto::nas::NasSecurityContext;
+use midn_ecs::{ImsiRegistry, World};
 
 use crate::s1ap::S1apMessage;
 use crate::hss::Hss;
@@ -316,10 +315,7 @@ impl Mme {
         let plain_pdu: Cow<[u8]> = if sht == SHT_PLAIN {
             Cow::Borrowed(nas_pdu)
         } else {
-            let nas_ctx = match self.world
-                .get_attach_context_mut(mme_ue_s1ap_id)
-                .and_then(|ctx| ctx.nas_security.as_mut())
-            {
+            let nas_ctx = match self.world.nas_security_mut(mme_ue_s1ap_id) {
                 Some(c) => c,
                 None => {
                     tracing::warn!(
@@ -390,7 +386,7 @@ impl Mme {
         let dl_teid  = u32::from_be_bytes(erab.gtp_teid);
         let enb_addr = erab.transport_layer_addr;
 
-        if let Some(t) = self.world.get_tunnel_mut(entity) {
+        if let Some(t) = self.world.tunnel_mut(entity) {
             let ul_teid = t.ul_teid;
             t.dl_teid  = dl_teid;
             t.enb_addr = enb_addr;
@@ -407,10 +403,10 @@ impl Mme {
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
         let entity = msg.mme_ue_s1ap_id;
 
-        let ul_teid = self.world.get_tunnel_mut(entity).map(|t| t.ul_teid);
+        let ul_teid = self.world.tunnel(entity).map(|t| t.ul_teid);
 
-        if let Some(ctx) = self.world.get_attach_context(entity) {
-            self.registry.deregister(ctx.imsi);
+        if let Some(identity) = self.world.identity(entity) {
+            self.registry.deregister(identity.imsi);
         }
 
         self.world.despawn(entity);
