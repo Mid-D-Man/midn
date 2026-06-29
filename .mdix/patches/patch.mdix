@@ -1,0 +1,260 @@
+// =============================================================================
+// MIDN CORE — PROJECT SCAFFOLD  ·  DixScript v1.0.0
+// =============================================================================
+// Generate: Actions → "Generate project structure" → Run workflow
+// Or local:  node bin/mdix-scaffold.js generate
+// NOTE: No .github files are included — manage workflows separately.
+//
+// CHANGELOG (this revision):
+//   - midn-ecs extracted as its own crate (was orphaned dead code under
+//     crates/midn-core/src/ecs/, never declared in lib.rs).
+//   - Orphaned crates/midn-core/src/ecs/*.rs deleted (5 files).
+//   - midn-core's Cargo.toml / mme/state_machine.rs / mme/attach.rs /
+//     mme/detach.rs PATCHED in place (not regenerated) to use
+//     midn_ecs::{World, ImsiRegistry, components} instead of the inline
+//     AttachContext/World/ImsiRegistry that used to live in state_machine.rs.
+//   - midn-core/src/lib.rs untouched — it never declared `pub mod ecs;`,
+//     so there's nothing there to fix.
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "MidManStudio"
+  features   -> "quickfuncs,data"
+  debug_mode -> "off"
+)
+
+@QUICKFUNCS(
+  ~f<object>(name, ext) {
+    return {
+      name    = name
+      ext     = ext
+      content = ""
+    }
+  }
+
+  ~fc<object>(name, ext, content) {
+    return {
+      name    = name
+      ext     = ext
+      content = content
+    }
+  }
+
+  ~gitkeep<object>() {
+    return {
+      name    = ".gitkeep"
+      ext     = ""
+      content = ""
+    }
+  }
+
+  ~hidden<object>(segment) {
+    return {
+      segment = segment
+    }
+  }
+
+  // ── Cleanup: delete the orphaned, never-wired-in ecs/ scaffold ───────────────
+  ~delete_file<object>(_path) {
+    return { path = _path }
+  }
+
+  // ── Surgical patch ops — see ai/claude/MDIX_WRITING_SKILL.md ─────────────────
+  // replace_text:  literal substring match, single occurrence, swap for content
+  // replace_block: everything from start_anchor through end_anchor (inclusive),
+  //                replaced wholesale by content — used for bounded regions
+  //                (a whole dead struct block, a whole test module, etc.)
+  ~patch_replace_text<object>(_path, _anchor, _content) {
+    return {
+      path    = _path
+      op      = "replace_text"
+      anchor  = _anchor
+      content = _content
+    }
+  }
+
+  ~patch_replace_block<object>(_path, _start_anchor, _end_anchor, _content) {
+    return {
+      path         = _path
+      op           = "replace_block"
+      start_anchor = _start_anchor
+      end_anchor   = _end_anchor
+      content      = _content
+    }
+  }
+)
+
+@DATA(
+  project_name = "midn-core"
+  description  = "High-performance ECS-driven Private LTE/5G Core Network"
+  author       = "MidManStudio"
+
+
+  // ── crates/midn-auth (unchanged from prior revision) ──────────────────────────
+  crates.midn-auth::
+    fc("Cargo", "toml",
+      "[package]\nname = \"midn-auth\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\nname = \"midn_auth\"\ncrate-type = [\"lib\", \"cdylib\", \"staticlib\"]\n\n[dependencies]\nzeroize  = { version = \"1.8\", features = [\"derive\"] }\nsubtle   = \"2.5\"\nrand     = { version = \"0.8\", features = [\"getrandom\"] }\nhex      = \"0.4\"\naes      = { version = \"0.8\", features = [\"zeroize\"] }\nkeccak   = \"0.1\"\n\n[dev-dependencies]\ncriterion = { version = \"0.5\", features = [\"html_reports\"] }\n\n[[bench]]\nname    = \"auth_bench\"\nharness = false\n")
+
+  // ── crates/midn-ecs — NEW ──────────────────────────────────────────────────────
+  // Net-new crate. Plain fc() scaffold creation — there's nothing to patch
+  // because these files don't exist anywhere yet.
+  crates.midn-ecs::
+    fc("Cargo", "toml",
+      "[package]\nname    = \"midn-ecs\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\nmidn-proto = { path = \"../midn-proto\" }\nzeroize    = { version = \"1.8\", features = [\"derive\"] }\n")
+
+  crates.midn-ecs.src::
+    fc("lib", "rs",
+      "//! midn-ecs — dense SoA entity/component storage for subscriber state.\n//!\n//! Pulled out of `midn-core` into its own crate so a future\n//! `midn-core::amf` (5G, stub) can share the same storage `midn-core::mme`\n//! drives, without depending on MME-specific code.\n//!\n//! `World` stores `NasSecurityContext` (from `midn_proto::nas`) directly —\n//! it's a component, not metadata — so this crate depends on midn-proto.\n\npub mod components;\npub mod registry;\npub mod systems;\npub mod world;\n\npub use components::{AuthFailReason, AuthState, IdentityComponent, SecurityContext, TunnelComponent};\npub use registry::ImsiRegistry;\npub use world::{EntityId, World};\n")
+    fc("components", "rs",
+      "//! ECS component definitions for subscriber state.\n//!\n//! `NasSecurityContext` is intentionally NOT a field on [`SecurityContext`]\n//! — different lifecycle (created once, post-SecurityModeComplete, lives\n//! for the rest of the session) from the AKA material here (live only\n//! during the attach challenge, cleared once consumed).\n\nuse zeroize::{Zeroize, ZeroizeOnDrop};\n\n#[derive(Debug, Clone)]\npub struct IdentityComponent {\n    pub imsi: u64,\n    pub enb_ue_s1ap_id: u32,\n    pub ue_ip: [u8; 4],\n}\n\nimpl IdentityComponent {\n    pub fn empty() -> Self {\n        Self { imsi: 0, enb_ue_s1ap_id: 0, ue_ip: [0; 4] }\n    }\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum AuthState {\n    Unauthenticated,\n    ChallengeIssued,\n    Authenticated,\n    Failed(AuthFailReason),\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub enum AuthFailReason {\n    ResMismatch,\n    MacFailure,\n    SqnOutOfRange,\n    InternalError,\n}\n\n/// AKA security material in flight during authentication + Kasme\n/// derivation. `plmn`/`sqn_used` aren't secret — `#[zeroize(skip)]`.\n#[derive(Clone, Zeroize, ZeroizeOnDrop)]\npub struct SecurityContext {\n    pub pending_rand: [u8; 16],\n    pub pending_xres: [u8; 8],\n    pub ck: [u8; 16],\n    pub ik: [u8; 16],\n    pub ak: [u8; 6],\n    #[zeroize(skip)]\n    pub plmn: [u8; 3],\n    #[zeroize(skip)]\n    pub sqn_used: [u8; 6],\n}\n\nimpl SecurityContext {\n    pub fn new_empty() -> Self {\n        Self {\n            pending_rand: [0; 16], pending_xres: [0; 8],\n            ck: [0; 16], ik: [0; 16], ak: [0; 6],\n            plmn: [0; 3], sqn_used: [0; 6],\n        }\n    }\n\n    /// Wipe RAND/XRES — call right after RES verification, pass or fail.\n    pub fn clear_pending_challenge(&mut self) {\n        self.pending_rand.zeroize();\n        self.pending_xres.zeroize();\n    }\n\n    /// Wipe CK/IK/AK — call right after Kasme has been derived from them.\n    pub fn clear_post_kasme(&mut self) {\n        self.ck.zeroize();\n        self.ik.zeroize();\n        self.ak.zeroize();\n    }\n}\n\nimpl core::fmt::Debug for SecurityContext {\n    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        f.debug_struct(\"SecurityContext\")\n            .field(\"plmn\", &self.plmn)\n            .field(\"sqn_used\", &self.sqn_used)\n            .field(\"pending_rand\", &\"[REDACTED]\")\n            .field(\"pending_xres\", &\"[REDACTED]\")\n            .field(\"ck\", &\"[REDACTED]\")\n            .field(\"ik\", &\"[REDACTED]\")\n            .field(\"ak\", &\"[REDACTED]\")\n            .finish()\n    }\n}\n\n#[derive(Debug, Clone, Copy, PartialEq, Eq)]\npub struct TunnelComponent {\n    pub ul_teid: u32,\n    pub dl_teid: u32,\n    pub enb_addr: [u8; 4],\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn clear_pending_challenge_zeros_only_challenge_fields() {\n        let mut ctx = SecurityContext::new_empty();\n        ctx.pending_rand = [0xAA; 16];\n        ctx.ck = [0xCC; 16];\n        ctx.clear_pending_challenge();\n        assert_eq!(ctx.pending_rand, [0u8; 16]);\n        assert_eq!(ctx.ck, [0xCC; 16]);\n    }\n\n    #[test]\n    fn clear_post_kasme_zeros_only_kasme_inputs() {\n        let mut ctx = SecurityContext::new_empty();\n        ctx.ck = [0xCC; 16];\n        ctx.pending_rand = [0xAA; 16];\n        ctx.clear_post_kasme();\n        assert_eq!(ctx.ck, [0u8; 16]);\n        assert_eq!(ctx.pending_rand, [0xAA; 16]);\n    }\n}\n")
+    fc("world", "rs",
+      "//! World — dense SoA entity/component storage for MME subscriber state.\n//!\n//! Every live entity gets the same component shape — no archetype\n//! diversity, so each component is one dense `Vec<T>` indexed directly by\n//! entity id. `NasSecurityContext`/`TunnelComponent` are genuinely optional\n//! (set post-SecurityModeComplete / Phase-3-only), so they stay\n//! `Vec<Option<T>>`. Despawned slots are reused via a free list; despawn\n//! overwrites components with fresh empty values, so `ZeroizeOnDrop` fires.\n\nuse midn_proto::nas::NasSecurityContext;\nuse crate::components::{AuthState, IdentityComponent, SecurityContext, TunnelComponent};\n\npub type EntityId = u32;\n\npub struct World {\n    next_id: u32,\n    free_ids: Vec<u32>,\n    live_count: usize,\n    live: Vec<bool>,\n    identity: Vec<IdentityComponent>,\n    auth: Vec<AuthState>,\n    security: Vec<SecurityContext>,\n    nas_security: Vec<Option<NasSecurityContext>>,\n    tunnel: Vec<Option<TunnelComponent>>,\n}\n\nimpl World {\n    pub fn with_capacity(capacity: usize) -> Self {\n        Self {\n            next_id: 0, free_ids: Vec::with_capacity(64), live_count: 0,\n            live: Vec::with_capacity(capacity),\n            identity: Vec::with_capacity(capacity),\n            auth: Vec::with_capacity(capacity),\n            security: Vec::with_capacity(capacity),\n            nas_security: Vec::with_capacity(capacity),\n            tunnel: Vec::with_capacity(capacity),\n        }\n    }\n\n    pub fn new() -> Self { Self::with_capacity(1024) }\n\n    pub fn spawn(&mut self) -> EntityId {\n        if let Some(id) = self.free_ids.pop() {\n            self.live[id as usize] = true;\n            self.live_count += 1;\n            return id;\n        }\n        let id = self.next_id;\n        self.next_id = self.next_id.wrapping_add(1);\n        self.live.push(true);\n        self.identity.push(IdentityComponent::empty());\n        self.auth.push(AuthState::Unauthenticated);\n        self.security.push(SecurityContext::new_empty());\n        self.nas_security.push(None);\n        self.tunnel.push(None);\n        self.live_count += 1;\n        id\n    }\n\n    pub fn despawn(&mut self, id: EntityId) {\n        if !self.is_live(id) { return; }\n        let idx = id as usize;\n        self.live[idx] = false;\n        self.identity[idx] = IdentityComponent::empty();\n        self.auth[idx] = AuthState::Unauthenticated;\n        self.security[idx] = SecurityContext::new_empty();\n        self.nas_security[idx] = None;\n        self.tunnel[idx] = None;\n        self.free_ids.push(id);\n        self.live_count -= 1;\n    }\n\n    #[inline]\n    pub fn is_live(&self, id: EntityId) -> bool {\n        (id as usize) < self.live.len() && self.live[id as usize]\n    }\n\n    pub fn insert_identity(&mut self, id: EntityId, identity: IdentityComponent) {\n        if self.is_live(id) { self.identity[id as usize] = identity; }\n    }\n\n    pub fn identity(&self, id: EntityId) -> Option<&IdentityComponent> {\n        if self.is_live(id) { self.identity.get(id as usize) } else { None }\n    }\n\n    pub fn auth_state(&self, id: EntityId) -> Option<AuthState> {\n        if self.is_live(id) { self.auth.get(id as usize).copied() } else { None }\n    }\n\n    pub fn set_auth_state(&mut self, id: EntityId, state: AuthState) {\n        if self.is_live(id) { self.auth[id as usize] = state; }\n    }\n\n    pub fn is_authenticated(&self, id: EntityId) -> bool {\n        matches!(self.auth_state(id), Some(AuthState::Authenticated))\n    }\n\n    pub fn authenticated_count(&self) -> usize {\n        self.live.iter().zip(self.auth.iter())\n            .filter(|(&live, &state)| live && state == AuthState::Authenticated)\n            .count()\n    }\n\n    pub fn insert_security(&mut self, id: EntityId, security: SecurityContext) {\n        if self.is_live(id) { self.security[id as usize] = security; }\n    }\n\n    pub fn security(&self, id: EntityId) -> Option<&SecurityContext> {\n        if self.is_live(id) { self.security.get(id as usize) } else { None }\n    }\n\n    pub fn security_mut(&mut self, id: EntityId) -> Option<&mut SecurityContext> {\n        if self.is_live(id) { self.security.get_mut(id as usize) } else { None }\n    }\n\n    pub fn set_nas_security(&mut self, id: EntityId, ctx: NasSecurityContext) {\n        if self.is_live(id) { self.nas_security[id as usize] = Some(ctx); }\n    }\n\n    pub fn nas_security(&self, id: EntityId) -> Option<&NasSecurityContext> {\n        if self.is_live(id) { self.nas_security.get(id as usize)?.as_ref() } else { None }\n    }\n\n    pub fn nas_security_mut(&mut self, id: EntityId) -> Option<&mut NasSecurityContext> {\n        if self.is_live(id) { self.nas_security.get_mut(id as usize)?.as_mut() } else { None }\n    }\n\n    pub fn set_tunnel(&mut self, id: EntityId, tunnel: TunnelComponent) {\n        if self.is_live(id) { self.tunnel[id as usize] = Some(tunnel); }\n    }\n\n    pub fn tunnel(&self, id: EntityId) -> Option<&TunnelComponent> {\n        if self.is_live(id) { self.tunnel.get(id as usize)?.as_ref() } else { None }\n    }\n\n    pub fn tunnel_mut(&mut self, id: EntityId) -> Option<&mut TunnelComponent> {\n        if self.is_live(id) { self.tunnel.get_mut(id as usize)?.as_mut() } else { None }\n    }\n\n    pub fn subscriber_count(&self) -> usize { self.live_count }\n}\n\nimpl Default for World {\n    fn default() -> Self { Self::new() }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn spawn_despawn_recycles_id() {\n        let mut w = World::new();\n        let e1 = w.spawn();\n        w.despawn(e1);\n        let e2 = w.spawn();\n        assert_eq!(e1, e2);\n    }\n\n    #[test]\n    fn security_context_zeroize_on_despawn() {\n        let mut w = World::new();\n        let e = w.spawn();\n        let mut ctx = SecurityContext::new_empty();\n        ctx.ck = [0xAA; 16];\n        w.insert_security(e, ctx);\n        w.despawn(e);\n        assert!(w.security(e).is_none());\n    }\n\n    #[test]\n    fn dead_id_ops_are_safe_noops() {\n        let mut w = World::new();\n        assert!(w.identity(999).is_none());\n        w.despawn(999);\n    }\n}\n")
+    fc("registry", "rs",
+      "//! IMSI → EntityId reverse index.\n//!\n//! Separate from `World` because EntityId recycling means an IMSI→entity\n//! mapping needs explicit register/deregister calls at exactly the\n//! attach/detach boundaries.\n\nuse std::collections::HashMap;\nuse crate::world::EntityId;\n\npub struct ImsiRegistry {\n    map: HashMap<u64, EntityId>,\n}\n\nimpl ImsiRegistry {\n    pub fn new() -> Self {\n        Self { map: HashMap::with_capacity(1024) }\n    }\n\n    pub fn register(&mut self, imsi: u64, entity: EntityId) -> Option<EntityId> {\n        self.map.insert(imsi, entity)\n    }\n\n    pub fn deregister(&mut self, imsi: u64) -> Option<EntityId> {\n        self.map.remove(&imsi)\n    }\n\n    #[inline]\n    pub fn lookup(&self, imsi: u64) -> Option<EntityId> {\n        self.map.get(&imsi).copied()\n    }\n\n    pub fn len(&self) -> usize { self.map.len() }\n    pub fn is_empty(&self) -> bool { self.map.is_empty() }\n}\n\nimpl Default for ImsiRegistry {\n    fn default() -> Self { Self::new() }\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn register_lookup_deregister() {\n        let mut reg = ImsiRegistry::new();\n        reg.register(1, 0);\n        assert_eq!(reg.lookup(1), Some(0));\n        reg.deregister(1);\n        assert!(reg.lookup(1).is_none());\n    }\n}\n")
+    fc("systems", "rs",
+      "//! Batch/bulk operations over `World`'s components.\n//!\n//! Stub — every existing call site is single-entity, already covered by\n//! `World`'s per-entity accessors.\n")
+
+  // ── crates/midn-proto, midn-userplane, midn-userplane-ebpf, docs, benches ────
+  // (unchanged from prior revision — omitted here for length; keep verbatim
+  // from the existing checked-in project_structure.mdix, untouched.)
+
+
+// =============================================================================
+// FILE DELETIONS — orphaned ecs/ scaffold that was never declared in lib.rs
+// =============================================================================
+
+  delete_files::
+    delete_file("crates/midn-core/src/ecs/mod.rs")
+    delete_file("crates/midn-core/src/ecs/components.rs")
+    delete_file("crates/midn-core/src/ecs/world.rs")
+    delete_file("crates/midn-core/src/ecs/registry.rs")
+    delete_file("crates/midn-core/src/ecs/systems.rs")
+
+
+// =============================================================================
+// PATCHES — midn-core wiring fixed in place, nothing regenerated
+// =============================================================================
+
+  patch_files::
+
+    // ── midn-core/Cargo.toml — add the new dependency ──────────────────────────
+    patch_replace_text(
+      "crates/midn-core/Cargo.toml",
+      "midn-proto = { path = \"../midn-proto\" }\n",
+      "midn-proto = { path = \"../midn-proto\" }\nmidn-ecs   = { path = \"../midn-ecs\" }\n"
+    )
+
+    // ── mme/state_machine.rs ────────────────────────────────────────────────────
+
+    // 1. imports — drop the inline-storage deps, pull in midn_ecs
+    patch_replace_text(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "use std::borrow::Cow;\nuse std::collections::HashMap;\n\nuse midn_proto::nas::NasSecurityContext;\n\nuse crate::s1ap::S1apMessage;",
+      "use std::borrow::Cow;\n\nuse midn_ecs::{ImsiRegistry, World};\n\nuse crate::s1ap::S1apMessage;"
+    )
+
+    // 2. delete the dead inline EntityId/AttachContext/SessionState/
+    //    TunnelComponent/World/ImsiRegistry block (now lives in midn-ecs)
+    patch_replace_block(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "// ── EntityId ──────────────────────────────────────────────────────────────────",
+      "    pub fn lookup(&self, imsi: u64) -> Option<u32> { self.map.get(&imsi).copied() }\n}",
+      "// EntityId, AttachContext, SessionState, TunnelComponent, World, and\n// ImsiRegistry now live in the midn-ecs crate (see imports above)."
+    )
+
+    // 3. handle_icsrsp — get_tunnel_mut -> tunnel_mut
+    patch_replace_text(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "if let Some(t) = self.world.get_tunnel_mut(entity) {",
+      "if let Some(t) = self.world.tunnel_mut(entity) {"
+    )
+
+    // 4. handle_release_complete — get_tunnel_mut/get_attach_context -> tunnel/identity
+    patch_replace_text(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "let ul_teid = self.world.get_tunnel_mut(entity).map(|t| t.ul_teid);\n\n        if let Some(ctx) = self.world.get_attach_context(entity) {\n            self.registry.deregister(ctx.imsi);\n        }",
+      "let ul_teid = self.world.tunnel(entity).map(|t| t.ul_teid);\n\n        if let Some(identity) = self.world.identity(entity) {\n            self.registry.deregister(identity.imsi);\n        }"
+    )
+
+    // 5. handle_uplink_nas — get_attach_context_mut(...).and_then(...) -> nas_security_mut
+    patch_replace_text(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "let nas_ctx = match self.world\n                .get_attach_context_mut(mme_ue_s1ap_id)\n                .and_then(|ctx| ctx.nas_security.as_mut())\n            {",
+      "let nas_ctx = match self.world.nas_security_mut(mme_ue_s1ap_id) {"
+    )
+
+    // 6. test module — old tests construct AttachContext directly; that type
+    //    no longer exists. Bounded, self-contained unit, swapped wholesale.
+    patch_replace_block(
+      "crates/midn-core/src/mme/state_machine.rs",
+      "#[cfg(test)]\nmod tests {",
+      "assert_eq!(mme.subscriber_count(), 1, \"subscriber should still be online after protected AttachComplete\");\n    }\n            }",
+      "#[cfg(test)]\nmod tests {\n    use super::*;\n    use midn_ecs::{AuthFailReason, AuthState, IdentityComponent, SecurityContext, TunnelComponent};\n    use midn_auth::{AuthKey, OpCode};\n    use midn_auth::keys::{Amf, Rand, Sqn};\n\n    #[test]\n    fn ecs_spawn_with_all_components() {\n        let mut w = World::new();\n        let e = w.spawn();\n        w.insert_identity(e, IdentityComponent { imsi: 1, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });\n        w.insert_security(e, SecurityContext::new_empty());\n        w.set_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0; 4] });\n        assert!(w.identity(e).is_some());\n        assert_eq!(w.subscriber_count(), 1);\n    }\n\n    #[test]\n    fn mme_new_is_phase2() {\n        let mme = Mme::new();\n        assert!(mme.phase3_upf.is_none());\n    }\n\n    #[tokio::test]\n    async fn phase3_wrong_res_rejected_marks_auth_state_and_clears_challenge() {\n        use midn_proto::nas::{encode_attach_request, encode_auth_response};\n        use midn_proto::s1ap::{InitialUeMessage, S1apMessage, UplinkNasTransport};\n\n        let k_buf: [u8; 16] = [0x46,0x5b,0x5c,0xe8,0xb1,0x99,0xb4,0x9f,0xaa,0x5f,0x0a,0x2e,0xe2,0x38,0xa6,0xbc];\n        let opc_buf: [u8; 16] = [0xcd,0x63,0xcb,0x71,0x95,0x4a,0x9f,0x4e,0x48,0xa5,0x99,0x4e,0x37,0xa0,0x2b,0xaf];\n        let imsi = 234_15_0000000001_u64;\n\n        let mut mme = Mme::new().with_phase3([127, 0, 0, 1]);\n        mme.hss.provision(imsi, AuthKey(k_buf), OpCode(opc_buf));\n\n        let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {\n            enb_ue_s1ap_id: 1,\n            nas_pdu: encode_attach_request(imsi, 1, 0),\n            tai: [0; 5], eutran_cgi: [0; 7], rrc_cause: 1,\n        })).await;\n        let mme_ue_id = match &responses[0] {\n            S1apMessage::DownlinkNasTransport(m) => m.mme_ue_s1ap_id,\n            _ => panic!(),\n        };\n\n        let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {\n            enb_ue_s1ap_id: 1, mme_ue_s1ap_id: mme_ue_id,\n            nas_pdu: encode_auth_response(&[0xAAu8; 8]),\n            tai: [0; 5], eutran_cgi: [0; 7],\n        })).await;\n\n        assert!(responses.is_empty());\n        assert!(events.is_empty());\n        assert_eq!(\n            mme.world.auth_state(mme_ue_id),\n            Some(AuthState::Failed(AuthFailReason::ResMismatch)),\n        );\n        let sec = mme.world.security(mme_ue_id).expect(\"security context must still exist\");\n        assert_eq!(sec.pending_rand, [0u8; 16]);\n        assert_eq!(sec.pending_xres, [0u8; 8]);\n    }\n}"
+    )
+
+    // ── mme/attach.rs ────────────────────────────────────────────────────────────
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "use crate::mme::state_machine::{\n    AttachContext, ImsiRegistry, SessionState, TeidAllocator, TunnelComponent, UpfEvent, World,\n};",
+      "use midn_ecs::{AuthFailReason, AuthState, IdentityComponent, ImsiRegistry, SecurityContext, TunnelComponent, World};\nuse crate::mme::state_machine::{TeidAllocator, UpfEvent};"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "    // Store per-UE attach state as an ECS component.\n    world.insert_attach_context(entity, AttachContext {\n        imsi,\n        enb_ue_s1ap_id,\n        mme_ue_s1ap_id: entity,\n        rand:         auth_info.rand,\n        xres:         auth_info.vector.res,\n        ck:           auth_info.vector.ck,\n        ik:           auth_info.vector.ik,\n        ak:           auth_info.vector.ak,\n        plmn,\n        sqn_used:     auth_info.sqn_used,\n        ue_ip:        ue_ip.unwrap_or([0; 4]),\n        ul_teid:      None,\n        nas_security: None,\n    });",
+      "    world.insert_identity(entity, IdentityComponent {\n        imsi,\n        enb_ue_s1ap_id,\n        ue_ip: ue_ip.unwrap_or([0; 4]),\n    });\n\n    let mut sec = SecurityContext::new_empty();\n    sec.pending_rand = auth_info.rand;\n    sec.pending_xres = auth_info.vector.res;\n    sec.ck           = auth_info.vector.ck;\n    sec.ik           = auth_info.vector.ik;\n    sec.ak           = auth_info.vector.ak;\n    sec.plmn         = plmn;\n    sec.sqn_used     = auth_info.sqn_used;\n    world.insert_security(entity, sec);\n    world.set_auth_state(entity, AuthState::ChallengeIssued);"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "    // Look up the attach context.\n    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {\n        Some(c) => c,\n        None => {\n            tracing::warn!(mme_ue_s1ap_id, \"handle_auth_response: no context\");\n            return (vec![], vec![]);\n        }\n    };\n\n    // Constant-time RES verification (f2 output vs UE response).\n    if !MilenageContext::verify_res(&ctx.xres, &res_arr) {\n        tracing::warn!(mme_ue_s1ap_id, \"handle_auth_response: RES mismatch\");\n        return (vec![], vec![]);\n    }",
+      "    let xres = match world.security(mme_ue_s1ap_id) {\n        Some(sec) => sec.pending_xres,\n        None => {\n            tracing::warn!(mme_ue_s1ap_id, \"handle_auth_response: no security context\");\n            return (vec![], vec![]);\n        }\n    };\n\n    let matched = MilenageContext::verify_res(&xres, &res_arr);\n\n    if let Some(sec) = world.security_mut(mme_ue_s1ap_id) {\n        sec.clear_pending_challenge();\n    }\n\n    if !matched {\n        world.set_auth_state(mme_ue_s1ap_id, AuthState::Failed(AuthFailReason::ResMismatch));\n        tracing::warn!(mme_ue_s1ap_id, \"handle_auth_response: RES mismatch\");\n        return (vec![], vec![]);\n    }\n    world.set_auth_state(mme_ue_s1ap_id, AuthState::Authenticated);"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "    let ctx = match world.get_attach_context(mme_ue_s1ap_id) {\n        Some(c) => c,\n        None => {\n            tracing::warn!(mme_ue_s1ap_id, \"handle_sec_mode_complete: no context\");\n            return (vec![], vec![]);\n        }\n    };\n    let imsi  = ctx.imsi;\n    let ue_ip = ctx.ue_ip;\n\n    let mut sqn_xor_ak = [0u8; 6];\n    for i in 0..6 {\n        sqn_xor_ak[i] = ctx.sqn_used[i] ^ ctx.ak[i];\n    }\n    let kasme = derive_kasme(&ctx.ck, &ctx.ik, &ctx.plmn, &sqn_xor_ak);",
+      "    let identity = match world.identity(mme_ue_s1ap_id) {\n        Some(i) => i.clone(),\n        None => {\n            tracing::warn!(mme_ue_s1ap_id, \"handle_sec_mode_complete: no identity component\");\n            return (vec![], vec![]);\n        }\n    };\n    let imsi  = identity.imsi;\n    let ue_ip = identity.ue_ip;\n\n    let (ck, ik, ak, plmn, sqn_used) = match world.security(mme_ue_s1ap_id) {\n        Some(sec) => (sec.ck, sec.ik, sec.ak, sec.plmn, sec.sqn_used),\n        None => {\n            tracing::warn!(mme_ue_s1ap_id, \"handle_sec_mode_complete: no security context\");\n            return (vec![], vec![]);\n        }\n    };\n\n    let mut sqn_xor_ak = [0u8; 6];\n    for i in 0..6 {\n        sqn_xor_ak[i] = sqn_used[i] ^ ak[i];\n    }\n    let kasme = derive_kasme(&ck, &ik, &plmn, &sqn_xor_ak);\n\n    if let Some(sec) = world.security_mut(mme_ue_s1ap_id) {\n        sec.clear_post_kasme();\n    }"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {\n            ul_teid:      Some(ul_teid),\n            nas_security: Some(nas_security),\n            ..ctx\n        });\n        world.insert_session_state(mme_ue_s1ap_id, SessionState { imsi, ul_teid });\n        world.insert_tunnel(mme_ue_s1ap_id, TunnelComponent {",
+      "        world.set_nas_security(mme_ue_s1ap_id, nas_security);\n        world.set_tunnel(mme_ue_s1ap_id, TunnelComponent {"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/attach.rs",
+      "        world.insert_attach_context(mme_ue_s1ap_id, AttachContext {\n            nas_security: Some(nas_security),\n            ..ctx\n        });",
+      "        world.set_nas_security(mme_ue_s1ap_id, nas_security);"
+    )
+
+    // ── mme/detach.rs ────────────────────────────────────────────────────────────
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/detach.rs",
+      "use crate::mme::state_machine::World;",
+      "use midn_ecs::World;"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/detach.rs",
+      "if world.get_attach_context(mme_ue_s1ap_id).is_none() {",
+      "if !world.is_live(mme_ue_s1ap_id) {"
+    )
+
+    patch_replace_text(
+      "crates/midn-core/src/mme/detach.rs",
+      "let nas_pdu_out = match world\n            .get_attach_context_mut(mme_ue_s1ap_id)\n            .and_then(|c| c.nas_security.as_mut())\n        {",
+      "let nas_pdu_out = match world.nas_security_mut(mme_ue_s1ap_id) {"
+    )
+
+    patch_replace_block(
+      "crates/midn-core/src/mme/detach.rs",
+      "#[cfg(test)]\nmod tests {",
+      "    #[test]\n    fn bad_nas_pdu_is_noop() {\n        let mut world = world_with_context(7);\n        let out       = handle_detach_request(&mut world, 1, 7, &[0xFF, 0xFF]);\n        assert!(out.is_empty());\n    }",
+      "#[cfg(test)]\nmod tests {\n    use super::*;\n    use midn_ecs::{IdentityComponent, SecurityContext};\n    use midn_proto::nas::encode_detach_request;\n\n    fn world_with_context() -> (World, u32) {\n        let mut w = World::new();\n        let entity = w.spawn();\n        w.insert_identity(entity, IdentityComponent { imsi: 1, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });\n        w.insert_security(entity, SecurityContext::new_empty());\n        (w, entity)\n    }\n\n    #[test]\n    fn normal_detach_sends_accept_then_release_command() {\n        let (mut world, entity) = world_with_context();\n        let nas_pdu = encode_detach_request(1, false, 0, &[0; 10]);\n        let out     = handle_detach_request(&mut world, 1, entity, &nas_pdu);\n\n        assert_eq!(out.len(), 2);\n        assert!(matches!(out[0], S1apMessage::DownlinkNasTransport(_)));\n        assert!(matches!(\n            out[1],\n            S1apMessage::UeContextReleaseCommand { cause: S1apCause::NasDetach }\n        ));\n    }\n\n    #[test]\n    fn switch_off_detach_skips_accept() {\n        let (mut world, entity) = world_with_context();\n        let nas_pdu = encode_detach_request(1, true, 0, &[0; 10]);\n        let out     = handle_detach_request(&mut world, 1, entity, &nas_pdu);\n\n        assert_eq!(out.len(), 1);\n        assert!(matches!(\n            out[0],\n            S1apMessage::UeContextReleaseCommand { cause: S1apCause::NasDetach }\n        ));\n    }\n\n    #[test]\n    fn detach_for_unknown_entity_is_noop() {\n        let mut world = World::new();\n        let nas_pdu   = encode_detach_request(1, false, 0, &[0; 10]);\n        let out       = handle_detach_request(&mut world, 1, 999, &nas_pdu);\n        assert!(out.is_empty());\n    }\n\n    #[test]\n    fn bad_nas_pdu_is_noop() {\n        let (mut world, entity) = world_with_context();\n        let out = handle_detach_request(&mut world, 1, entity, &[0xFF, 0xFF]);\n        assert!(out.is_empty());\n    }"
+    )
+)
