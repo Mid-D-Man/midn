@@ -1,14 +1,14 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-06-30T12:45:03Z"
+  generated  -> "2026-06-30T13:10:02Z"
   debug_mode -> "off"
 )
 
 @DATA(
   template      = ".mdix/patches/patch.mdix"
   template_hash = "f0fb97238a59"
-  last_run      = "2026-06-30T12:45:03Z"
-  new_this_run  = 0
+  last_run      = "2026-06-30T13:10:02Z"
+  new_this_run  = 5
   overridden    = 0
   skipped       = 2
   deleted       = 0
@@ -17,5 +17,9 @@
   updated       = 0
 
   created_files::
-    
+    "crates/midn-ecs/src/components.rs"
+    "crates/midn-ecs/src/lib.rs"
+    "crates/midn-ecs/src/registry.rs"
+    "crates/midn-ecs/src/systems.rs"
+    "crates/midn-ecs/src/world.rs"
 )
