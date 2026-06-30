@@ -4,9 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Preview changes without writing (true/false)'
+        description: 'Preview changes without writing'
         required: false
+        type: choice
         default: 'false'
+        options:
+          - 'false'
+          - 'true'
+      dump_json:
+        description: 'Dump the full untruncated structure JSON'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: write
@@ -16,4 +28,5 @@ jobs:
     uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
     with:
       template:  '.mdix/patches/patch.mdix'
-      dry_run:   ${{ inputs.dry_run || 'false' }}
+      dry_run:   ${{ inputs.dry_run }}
+      dump_json: ${{ inputs.dump_json }}
