@@ -1,21 +1,21 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-06-30T12:33:58Z"
+  generated  -> "2026-06-30T12:44:37Z"
   debug_mode -> "off"
 )
 
 @DATA(
-  template      = ".mdix/patches/patch.mdix"
-  template_hash = "2948234f8e03"
-  last_run      = "2026-06-30T12:33:58Z"
+  template      = ".mdix/project_structure/project_structure.mdix"
+  template_hash = "a9bd48e94d0b"
+  last_run      = "2026-06-30T12:44:37Z"
   new_this_run  = 0
   overridden    = 0
-  skipped       = 2
+  skipped       = 22
   deleted       = 0
   renamed       = 0
   moved         = 0
   updated       = 0
 
   created_files::
-    "crates/midn-ecs/Cargo.toml"
+    
 )
