@@ -21,7 +21,7 @@
   version    -> "1.0.0"
   author     -> "MidManStudio"
   features   -> "quickfuncs,data"
-  debug_mode -> "off"
+  debug_mode -> "verbose"
 )
 
 @QUICKFUNCS(
