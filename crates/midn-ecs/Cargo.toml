@@ -1,0 +1,8 @@
+[package]
+name    = "midn-ecs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+midn-proto = { path = "../midn-proto" }
+zeroize    = { version = "1.8", features = ["derive"] }
