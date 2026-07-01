@@ -8,6 +8,12 @@
 //! | Phase 2 | `Mme::new()`             | DownlinkNasTransport(AttachAccept) |
 //! | Phase 3 | `.with_phase3(upf_addr)` | InitialContextSetupRequest         |
 //!
+//! ## ECS storage
+//!
+//! Subscriber state lives in `midn_ecs::World` (dense SoA). The old inline
+//! `AttachContext`/`SessionState`/`TunnelComponent`/`World`/`ImsiRegistry`
+//! types have been removed — `midn_ecs` owns all of that now.
+//!
 //! ## TEID lifecycle
 //!
 //! `TeidAllocator` (below) hands out Phase 3 UL TEIDs with a free list, so a
@@ -15,23 +21,16 @@
 //! of the counter growing unbounded. Allocated in
 //! `attach::handle_security_mode_complete`, released in
 //! `handle_release_complete` once `UeContextReleaseComplete` confirms the
-//! eNodeB has actually torn down the radio context — whether that release was
-//! triggered by the network or by `mme::detach::handle_detach_request`.
+//! eNodeB has actually torn down the radio context.
 //!
 //! ## NAS security
 //!
-//! `AttachContext::nas_security` holds the per-subscriber
+//! `midn_ecs::World`'s `nas_security` slot holds the per-subscriber
 //! `NasSecurityContext` once it's created (in
-//! `attach::handle_security_mode_complete` — see that function and
-//! `nas::security` module docs for the activation point). Kasme is derived
-//! via `crate::kdf::derive_kasme` (TS 33.401 Annex A.2), using
-//! `AttachContext::plmn` (captured from S1AP `tai` in `start_attach`) and
-//! `AttachContext::ak` (the Milenage f5 output, combined with `sqn_used` as
-//! SQN ⊕ AK). `handle_uplink_nas` auto-detects protected vs plain uplink NAS
-//! PDUs from the security header type nibble (octet 1, high nibble) and
-//! transparently unwraps protected ones before dispatching — callers/tests
-//! that still send plain bytes for later messages (AttachComplete, Detach)
-//! are unaffected.
+//! `attach::handle_security_mode_complete`). Kasme is derived via
+//! `crate::kdf::derive_kasme` (TS 33.401 Annex A.2). `handle_uplink_nas`
+//! auto-detects protected vs plain uplink NAS PDUs from the security header
+//! type nibble and transparently unwraps protected ones before dispatching.
 
 use std::borrow::Cow;
 
@@ -42,124 +41,10 @@ use crate::hss::Hss;
 use crate::mme::attach;
 use crate::mme::detach;
 
-// ── EntityId ──────────────────────────────────────────────────────────────────
-
-pub type EntityId = u32;
-
-// ── Component types ───────────────────────────────────────────────────────────
-
-#[derive(Clone, Debug)]
-pub struct AttachContext {
-    pub imsi:           u64,
-    pub enb_ue_s1ap_id: u32,
-    pub mme_ue_s1ap_id: u32,
-    pub rand:           [u8; 16],
-    pub xres:           [u8; 8],
-    pub ck:             [u8; 16],
-    pub ik:             [u8; 16],
-    /// Milenage f5 output (AK) for this auth attempt. Combined with
-    /// `sqn_used` (SQN ⊕ AK) as a Kasme KDF input — see
-    /// `crate::kdf::derive_kasme` and `mme::attach` module docs.
-    pub ak:             [u8; 6],
-    /// Serving network identity (PLMN-Id, 3 octets) — captured from the
-    /// S1AP `tai` field on `InitialUeMessage` (TAI = PLMN(3) ‖ TAC(2)).
-    /// Used as a Kasme KDF input (TS 33.401 Annex A.2).
-    pub plmn:           [u8; 3],
-    pub sqn_used:       [u8; 6],
-    pub ue_ip:          [u8; 4],
-    pub ul_teid:        Option<u32>,
-    /// NAS security context for this subscriber — `None` until
-    /// `attach::handle_security_mode_complete` creates it. See module docs.
-    pub nas_security:   Option<NasSecurityContext>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SessionState {
-    pub imsi:    u64,
-    pub ul_teid: u32,
-}
-
-#[derive(Clone, Debug)]
-pub struct TunnelComponent {
-    pub ul_teid:  u32,
-    pub dl_teid:  u32,
-    pub enb_addr: [u8; 4],
-}
-
-// ── World ─────────────────────────────────────────────────────────────────────
-
-#[derive(Default)]
-pub struct World {
-    next_id:         u32,
-    free_ids:        Vec<u32>,
-    attach_contexts: HashMap<u32, AttachContext>,
-    session_states:  HashMap<u32, SessionState>,
-    pub tunnels:     HashMap<u32, TunnelComponent>,
-}
-
-impl World {
-    pub fn new() -> Self { Self::default() }
-
-    pub fn spawn(&mut self) -> u32 {
-        self.free_ids.pop().unwrap_or_else(|| {
-            let id = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1);
-            id
-        })
-    }
-
-    pub fn despawn(&mut self, entity: u32) {
-        self.attach_contexts.remove(&entity);
-        self.session_states.remove(&entity);
-        self.tunnels.remove(&entity);
-        self.free_ids.push(entity);
-    }
-
-    pub fn insert_attach_context(&mut self, entity: u32, ctx: AttachContext) {
-        self.attach_contexts.insert(entity, ctx);
-    }
-    pub fn get_attach_context(&self, entity: u32) -> Option<AttachContext> {
-        self.attach_contexts.get(&entity).cloned()
-    }
-    pub fn get_attach_context_mut(&mut self, entity: u32) -> Option<&mut AttachContext> {
-        self.attach_contexts.get_mut(&entity)
-    }
-    pub fn insert_session_state(&mut self, entity: u32, s: SessionState) {
-        self.session_states.insert(entity, s);
-    }
-    pub fn insert_tunnel(&mut self, entity: u32, t: TunnelComponent) {
-        self.tunnels.insert(entity, t);
-    }
-    pub fn get_tunnel_mut(&mut self, entity: u32) -> Option<&mut TunnelComponent> {
-        self.tunnels.get_mut(&entity)
-    }
-    pub fn subscriber_count(&self) -> usize {
-        self.attach_contexts.len()
-    }
-}
-
-// ── ImsiRegistry ──────────────────────────────────────────────────────────────
-
-#[derive(Default)]
-pub struct ImsiRegistry {
-    map: HashMap<u64, u32>,
-}
-
-impl ImsiRegistry {
-    pub fn new() -> Self { Self::default() }
-    pub fn register(&mut self, imsi: u64, entity: u32) { self.map.insert(imsi, entity); }
-    pub fn deregister(&mut self, imsi: u64) { self.map.remove(&imsi); }
-    pub fn lookup(&self, imsi: u64) -> Option<u32> { self.map.get(&imsi).copied() }
-}
-
 // ── TEID allocator ────────────────────────────────────────────────────────────
 
 /// Allocates uplink TEIDs for Phase 3 sessions, with a free list so detached
 /// subscribers' TEIDs get reused instead of the counter growing forever.
-///
-/// Mirrors the same free-list pattern as `World`'s entity ID allocator and
-/// `midn_userplane::upf::tunnel::TunnelManager` — pop a freed id first, only
-/// fall back to the monotonic counter when the free list is empty.
 #[derive(Debug)]
 pub struct TeidAllocator {
     next: u32,
@@ -171,7 +56,6 @@ impl TeidAllocator {
         Self { next: base, free: Vec::with_capacity(64) }
     }
 
-    /// Allocate a TEID — reuses a freed one if available, else advances the counter.
     pub fn alloc(&mut self) -> u32 {
         if let Some(id) = self.free.pop() {
             return id;
@@ -181,16 +65,10 @@ impl TeidAllocator {
         t
     }
 
-    /// Return a TEID to the free list after its session has torn down.
-    ///
-    /// Call exactly once per TEID, after the subscriber's tunnel/session
-    /// state has been removed — double-releasing the same TEID would let it
-    /// be handed out twice concurrently.
     pub fn release(&mut self, teid: u32) {
         self.free.push(teid);
     }
 
-    /// Number of TEIDs currently available for reuse.
     pub fn free_count(&self) -> usize { self.free.len() }
 }
 
@@ -252,13 +130,10 @@ impl Mme {
         self.teid_allocator.alloc()
     }
 
-    /// Return a TEID to the free list — call after a subscriber's session has
-    /// fully torn down (see `handle_release_complete`).
     pub fn release_ul_teid(&mut self, teid: u32) {
         self.teid_allocator.release(teid);
     }
 
-    /// Number of TEIDs currently available for reuse — mainly for tests/metrics.
     pub fn free_teid_count(&self) -> usize {
         self.teid_allocator.free_count()
     }
@@ -304,12 +179,6 @@ impl Mme {
     ) -> (Vec<S1apMessage>, Vec<UpfEvent>) {
         use midn_proto::nas::{decode_nas, decode_protected, NasPdu, NAS_BEARER, SHT_PLAIN};
 
-        // Detect a protected envelope vs a plain PDU from the security header
-        // type in the high nibble of octet 1 (see nas::codec module docs).
-        // Plain messages (AuthenticationResponse, SecurityModeComplete — sent
-        // before NAS security activates) and a mock UE that still sends later
-        // messages plain both take the fast path straight into decode_nas,
-        // exactly as before NAS security was wired in.
         let sht = nas_pdu.first().map(|b| (*b >> 4) & 0x0F).unwrap_or(0);
 
         let plain_pdu: Cow<[u8]> = if sht == SHT_PLAIN {
@@ -431,10 +300,9 @@ impl Default for Mme {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use midn_ecs::{AuthFailReason, AuthState, IdentityComponent, SecurityContext, TunnelComponent};
     use midn_auth::{AuthKey, OpCode};
     use midn_auth::keys::{Amf, Rand, Sqn};
-
-    // ── Unit tests ────────────────────────────────────────────────────────────
 
     #[test]
     fn ecs_spawn_returns_sequential_ids() {
@@ -459,16 +327,10 @@ mod tests {
     fn ecs_spawn_with_all_components() {
         let mut w = World::new();
         let e = w.spawn();
-        w.insert_attach_context(e, AttachContext {
-            imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
-            rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
-            ak: [0;6], plmn: [0;3],
-            sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
-            nas_security: None,
-        });
-        w.insert_session_state(e, SessionState { imsi: 1, ul_teid: 0x0001_0000 });
-        w.insert_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0;4] });
-        assert!(w.get_attach_context(e).is_some());
+        w.insert_identity(e, IdentityComponent { imsi: 1, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });
+        w.insert_security(e, SecurityContext::new_empty());
+        w.set_tunnel(e, TunnelComponent { ul_teid: 0x0001_0000, dl_teid: 0, enb_addr: [0; 4] });
+        assert!(w.identity(e).is_some());
         assert_eq!(w.subscriber_count(), 1);
     }
 
@@ -476,15 +338,10 @@ mod tests {
     fn ecs_despawn_removes_all_components() {
         let mut w = World::new();
         let e = w.spawn();
-        w.insert_attach_context(e, AttachContext {
-            imsi: 1, enb_ue_s1ap_id: 0, mme_ue_s1ap_id: e,
-            rand: [0;16], xres: [0;8], ck: [0;16], ik: [0;16],
-            ak: [0;6], plmn: [0;3],
-            sqn_used: [0;6], ue_ip: [0;4], ul_teid: None,
-            nas_security: None,
-        });
+        w.insert_identity(e, IdentityComponent { imsi: 1, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });
+        w.insert_security(e, SecurityContext::new_empty());
         w.despawn(e);
-        assert!(w.get_attach_context(e).is_none());
+        assert!(w.identity(e).is_none());
         assert_eq!(w.subscriber_count(), 0);
     }
 
@@ -616,13 +473,11 @@ mod tests {
             _ => panic!("step 1: expected DownlinkNasTransport"),
         };
 
-        // Decode AuthReq and extract RAND.
         let rand_bytes = match decode_nas(&auth_req_pdu).unwrap() {
             NasPdu::AuthenticationRequest(d) => d.rand,
             other => panic!("step 1: expected AuthReq NAS PDU, got {:?}", other),
         };
 
-        // Compute correct RES: same K, OPc, RAND, SQN=0 (first call), AMF=[0x80,0x00].
         let ctx = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
         let av  = ctx.generate_vector_with_rand(
             Sqn::from_bytes(&[0u8; 6]),
@@ -719,17 +574,12 @@ mod tests {
             _ => panic!("step 4: expected UpdateBearer event"),
         }
 
-        let tunnel = mme.world.tunnels.get(&mme_ue_id).expect("tunnel must exist");
+        let tunnel = mme.world.tunnel(mme_ue_id).expect("tunnel must exist");
         assert_eq!(tunnel.dl_teid,  enb_dl_teid);
         assert_eq!(tunnel.enb_addr, enb_s1u_addr);
         assert_eq!(tunnel.ul_teid,  ul_teid);
 
         // ── Step 5: AttachComplete → subscriber online ────────────────────────
-        //
-        // Sent PLAIN here (mock UE doesn't bother protecting it) — the
-        // dispatcher auto-detects sht=0 and takes the unchanged plain path.
-        // See phase3_attach_complete_via_protected_nas_envelope below for the
-        // protected-envelope version of this same step.
 
         let (responses, events) = mme.process_s1ap(
             S1apMessage::UplinkNasTransport(UplinkNasTransport {
@@ -781,7 +631,6 @@ mod tests {
             _ => panic!(),
         };
 
-        // Send deliberately wrong RES — all 0xAA
         let wrong_res = [0xAAu8; 8];
         let (responses, events) = mme.process_s1ap(
             S1apMessage::UplinkNasTransport(UplinkNasTransport {
@@ -794,6 +643,14 @@ mod tests {
 
         assert!(responses.is_empty(), "wrong RES must produce no S1AP response");
         assert!(events.is_empty(),    "wrong RES must produce no UPF events");
+        assert_eq!(
+            mme.world.auth_state(mme_ue_id),
+            Some(AuthState::Failed(AuthFailReason::ResMismatch)),
+            "AuthState must record the RES mismatch explicitly"
+        );
+        let sec = mme.world.security(mme_ue_id).expect("security context must still exist");
+        assert_eq!(sec.pending_rand, [0u8; 16], "pending RAND must be zeroized");
+        assert_eq!(sec.pending_xres, [0u8; 8],  "pending XRES must be zeroized");
     }
 
     // ── Phase 3 detach: full close-the-loop test ──────────────────────────────
@@ -824,8 +681,6 @@ mod tests {
         let mut mme = Mme::new().with_phase3(upf_addr);
         mme.hss.provision(imsi, AuthKey(k_buf), OpCode(opc_buf));
         let ctx = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
-
-        // ── Drive through attach far enough to allocate a UL TEID ────────────
 
         let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {
             enb_ue_s1ap_id: enb_id,
@@ -859,18 +714,14 @@ mod tests {
         };
         assert_eq!(mme.free_teid_count(), 0, "freshly allocated TEID is not free");
 
-        // ── UE sends DetachRequest (plain — exercises the sht=0 fast path) ────
-
         let (responses, events) = mme.process_s1ap(S1apMessage::UplinkNasTransport(UplinkNasTransport {
             enb_ue_s1ap_id: enb_id, mme_ue_s1ap_id: mme_ue_id,
             nas_pdu: encode_detach_request(1, false, 0, &[0; 10]),
             tai: [0; 5], eutran_cgi: [0; 7],
         })).await;
-        assert_eq!(responses.len(), 2, "expect DetachAccept (now protected) + UeContextReleaseCommand");
+        assert_eq!(responses.len(), 2, "expect DetachAccept + UeContextReleaseCommand");
         assert!(events.is_empty(), "no UpfEvent until UeContextReleaseComplete");
         assert!(matches!(responses[1], S1apMessage::UeContextReleaseCommand { .. }));
-
-        // ── eNodeB confirms release ───────────────────────────────────────────
 
         let (responses, events) = mme.process_s1ap(
             S1apMessage::UeContextReleaseComplete(UeContextReleaseComplete {
@@ -885,8 +736,6 @@ mod tests {
         }
         assert_eq!(mme.subscriber_count(), 0);
         assert_eq!(mme.free_teid_count(), 1, "TEID returned to the free list");
-
-        // ── Next subscriber's attach reuses the freed TEID ────────────────────
 
         let imsi2 = 234_15_5550002_u64;
         mme.hss.provision(imsi2, AuthKey(k_buf), OpCode(opc_buf));
@@ -953,9 +802,6 @@ mod tests {
         mme.hss.provision(imsi, AuthKey(k_buf), OpCode(opc_buf));
         let milenage = MilenageContext::new(AuthKey(k_buf), OpCode(opc_buf));
 
-        // ── Drive through attach far enough to activate NAS security ──────────
-        // (steps 1-3, same shape as phase3_full_attach_procedure)
-
         let (responses, _) = mme.process_s1ap(S1apMessage::InitialUeMessage(InitialUeMessage {
             enb_ue_s1ap_id: enb_id,
             nas_pdu:        encode_attach_request(imsi, 1, 0),
@@ -983,21 +829,13 @@ mod tests {
             tai: [0; 5], eutran_cgi: [0; 7],
         })).await;
 
-        // ── Build a protected AttachComplete, exactly as a real UE would ──────
-        //
-        // The MME never exposes its NasSecurityContext to test code — this
-        // independently re-derives the SAME Kasme and NAS keys the MME just
-        // derived internally. SQN=0 for this subscriber's first auth attempt,
-        // so SQN ⊕ AK == AK. PLMN matches the all-zero `tai` this test's
-        // InitialUeMessage sent, which `start_attach` reads into
-        // AttachContext::plmn — both sides land on the same Kasme input.
         let mut sqn_xor_ak = [0u8; 6];
         sqn_xor_ak.copy_from_slice(&av.ak);
         let kasme = crate::kdf::derive_kasme(&av.ck, &av.ik, &[0, 0, 0], &sqn_xor_ak);
         let (k_enc, k_int) = derive_nas_keys(&kasme, NasEeaAlgorithm::Eea2, NasEiaAlgorithm::Eia2);
 
         let attach_complete_plain = encode_attach_complete();
-        let count = 0u32; // first protected message this UE sends
+        let count = 0u32;
         let mut ciphertext = attach_complete_plain.to_vec();
         eea2_apply(&k_enc, count, NAS_BEARER, Direction::Uplink, &mut ciphertext);
         let mac_i = eia2_compute_mac(&k_int, count, NAS_BEARER, Direction::Uplink, &ciphertext);
@@ -1017,4 +855,4 @@ mod tests {
         assert!(events.is_empty());
         assert_eq!(mme.subscriber_count(), 1, "subscriber should still be online after protected AttachComplete");
     }
-            }
+                              }
