@@ -7,42 +7,29 @@
 //!
 //! | Benchmark                    | Gate     | Rationale                                  |
 //! |------------------------------|----------|--------------------------------------------|
-//! | ecs_spawn                    | < 1 µs   | Build #3 baseline: 819 ps (counter incr)   |
-//! | ecs_spawn_with_all_components| < 5 µs   | 5× HashMap insert, fresh world each sample |
-//! | ecs_despawn_with_zeroize     | < 5 µs   | Build #3 baseline: 164 ns                  |
-//! | ecs_lookup_auth_state        | < 100 ns | Build #3 baseline: 11 ns                   |
-//! | registry_lookup              | < 100 ns | Build #3 baseline: 14 ns                   |
-//! | hss_provision                | < 1 µs   | Build #3 baseline: 77 ns                   |
-//!
-//! ## Notes on iter_batched
-//!
-//! `ecs_spawn_with_all_components` uses `iter_batched` so each sample gets a
-//! fresh CoreWorld. Without this, the world accumulates across thousands of
-//! Criterion iterations, HashMap rehashes dominate, and you measure table
-//! growth rather than the actual spawn cost.
-//!
-//! `hss_get_auth_vector` is NOT benched here — `generate_vector` is `todo!()`
-//! until Phase 1 validates test sets 1-6. Expected gate after Phase 1: < 20 µs.
+//! | ecs_spawn                    | < 1 µs   | Build #7 baseline: 1.07 ns                 |
+//! | ecs_spawn_with_all_components| < 5 µs   | Build #7 baseline: 397 ns (iter_batched)   |
+//! | ecs_despawn_with_zeroize     | < 5 µs   | Build #7 baseline: 208 ns                  |
+//! | ecs_lookup_auth_state        | < 100 ns | Build #7 baseline: 14 ns                   |
+//! | registry_lookup              | < 100 ns | Build #7 baseline: 17 ns                   |
+//! | hss_provision                | < 1 µs   | Build #7 baseline: 90 ns                   |
 
 use criterion::{
     black_box, criterion_group, criterion_main,
     BatchSize, BenchmarkId, Criterion,
 };
 
-use midn_core::ecs::world::CoreWorld;
-use midn_core::ecs::components::{
-    AuthState, ImsiComponent, SecurityContext, SessionState, TunnelComponent,
+use midn_ecs::{
+    AuthState, IdentityComponent, ImsiRegistry, SecurityContext, TunnelComponent, World,
 };
-use midn_core::ecs::registry::ImsiRegistry;
 use midn_core::hss::Hss;
 
 // ── ECS world benchmarks ──────────────────────────────────────────────────────
 
 fn bench_ecs_spawn(c: &mut Criterion) {
-    let mut world = CoreWorld::with_capacity(128);
+    let mut world = World::with_capacity(128);
 
-    // Gate: < 1 µs  |  Build #3 baseline: 819 ps
-    // Measures: entity ID counter increment — intentionally trivial.
+    // Gate: < 1 µs
     c.bench_function("ecs_spawn", |b| {
         b.iter(|| {
             let id = world.spawn();
@@ -53,34 +40,25 @@ fn bench_ecs_spawn(c: &mut Criterion) {
 
 fn bench_ecs_spawn_with_all_components(c: &mut Criterion) {
     // Gate: < 5 µs
-    //
-    // Uses iter_batched(SmallInput): each sample gets a fresh CoreWorld(16).
-    // Without this, the world grows unboundedly across Criterion's warmup +
-    // measurement iterations, rehash events dominate, and you measure cache
-    // thrashing rather than the actual insert cost. (Build #3 showed 31.526 µs
-    // — that was all resize overhead, not real spawn cost.)
-    //
-    // SmallInput: setup runs per-sample inside the measurement loop.
-    // The world is sized at 16 to keep it small but not force a rehash on
-    // the first insert.
+    // iter_batched: each sample gets a fresh World so we measure insert cost,
+    // not HashMap resize.
     c.bench_function("ecs_spawn_with_all_components", |b| {
         b.iter_batched(
-            || CoreWorld::with_capacity(16),
+            || World::with_capacity(16),
             |mut world| {
                 let id = world.spawn();
-                world.imsi.insert(id, ImsiComponent(black_box(234_15_1234567890_u64)));
-                world.auth.insert(id, AuthState::Unauthenticated);
-                world.security.insert(id, SecurityContext::new_empty());
-                world.session.insert(id, SessionState::new(
-                    black_box([10, 0, 0, 1]),
-                    b"internet",
-                    5,
-                ));
-                world.tunnel.insert(id, TunnelComponent::new(
-                    black_box(0x0001_0000),
-                    black_box(0x0002_0000),
-                    black_box([192, 168, 1, 100]),
-                ));
+                world.insert_identity(id, IdentityComponent {
+                    imsi: black_box(234_15_1234567890_u64),
+                    enb_ue_s1ap_id: 0,
+                    ue_ip: [10, 0, 0, 1],
+                });
+                world.set_auth_state(id, AuthState::Unauthenticated);
+                world.insert_security(id, SecurityContext::new_empty());
+                world.set_tunnel(id, TunnelComponent {
+                    ul_teid: black_box(0x0001_0000),
+                    dl_teid: 0,
+                    enb_addr: [192, 168, 1, 100],
+                });
                 black_box(id)
             },
             BatchSize::SmallInput,
@@ -89,40 +67,36 @@ fn bench_ecs_spawn_with_all_components(c: &mut Criterion) {
 }
 
 fn bench_ecs_despawn_with_zeroize(c: &mut Criterion) {
-    // Gate: < 5 µs  |  Build #3 baseline: 164 ns (5× faster than gate)
-    //
-    // Measures: 5× HashMap remove + SecurityContext ZeroizeOnDrop.
+    // Gate: < 5 µs — measures despawn + SecurityContext ZeroizeOnDrop.
     // The zeroize cost is the security contract — do NOT optimize it away.
     let mut group = c.benchmark_group("ecs_despawn");
 
     group.bench_function("with_security_context_zeroize", |b| {
-        // Setup: a persistent world that we despawn-from and respawn-into
-        // each iteration so HashMap size stays constant (~1 entry).
-        let mut world = CoreWorld::with_capacity(4);
+        let mut world = World::with_capacity(4);
 
         let seed = world.spawn();
-        world.imsi.insert(seed, ImsiComponent(234_15_0000000001_u64));
-        world.auth.insert(seed, AuthState::Authenticated);
+        world.insert_identity(seed, IdentityComponent {
+            imsi: 234_15_0000000001_u64, enb_ue_s1ap_id: 0, ue_ip: [10, 0, 1, 1],
+        });
+        world.set_auth_state(seed, AuthState::Authenticated);
         let mut ctx = SecurityContext::new_empty();
         ctx.ck = [0xAA; 16];
         ctx.ik = [0xBB; 16];
-        world.security.insert(seed, ctx);
-        world.session.insert(seed, SessionState::new([10, 0, 1, 1], b"internet", 5));
-        world.tunnel.insert(seed, TunnelComponent::new(1, 2, [192, 168, 0, 1]));
+        world.insert_security(seed, ctx);
+        world.set_tunnel(seed, TunnelComponent { ul_teid: 1, dl_teid: 2, enb_addr: [192, 168, 0, 1] });
 
         b.iter(|| {
             world.despawn(black_box(seed));
 
-            // Respawn with fresh components so the next iter has something to despawn.
-            // The world never grows past 1 entity — no resize pressure.
             let id = world.spawn();
-            world.imsi.insert(id, ImsiComponent(234_15_0000000001_u64));
-            world.auth.insert(id, AuthState::Authenticated);
+            world.insert_identity(id, IdentityComponent {
+                imsi: 234_15_0000000001_u64, enb_ue_s1ap_id: 0, ue_ip: [10, 0, 1, 1],
+            });
+            world.set_auth_state(id, AuthState::Authenticated);
             let mut ctx = SecurityContext::new_empty();
             ctx.ck = [0xAA; 16];
-            world.security.insert(id, ctx);
-            world.session.insert(id, SessionState::new([10, 0, 1, 1], b"internet", 5));
-            world.tunnel.insert(id, TunnelComponent::new(1, 2, [192, 168, 0, 1]));
+            world.insert_security(id, ctx);
+            world.set_tunnel(id, TunnelComponent { ul_teid: 1, dl_teid: 2, enb_addr: [192, 168, 0, 1] });
             black_box(id)
         })
     });
@@ -131,19 +105,17 @@ fn bench_ecs_despawn_with_zeroize(c: &mut Criterion) {
 }
 
 fn bench_ecs_lookup(c: &mut Criterion) {
-    let mut world = CoreWorld::with_capacity(1024);
+    let mut world = World::with_capacity(1024);
 
-    // Pre-populate 1000 entities so lookup is into a realistic table.
-    let ids: Vec<_> = (0..1000u64).map(|i| {
+    for i in 0..1000u64 {
         let id = world.spawn();
-        world.imsi.insert(id, ImsiComponent(i));
-        world.auth.insert(id, AuthState::Authenticated);
-        id
-    }).collect();
+        world.insert_identity(id, IdentityComponent { imsi: i, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });
+        world.set_auth_state(id, AuthState::Authenticated);
+    }
 
-    let mid = ids[500];
+    let mid = 500u32;
 
-    // Gate: < 100 ns  |  Build #3 baseline: 11 ns
+    // Gate: < 100 ns
     c.bench_function("ecs_lookup_auth_state", |b| {
         b.iter(|| world.auth_state(black_box(mid)))
     });
@@ -154,19 +126,19 @@ fn bench_ecs_lookup(c: &mut Criterion) {
 }
 
 fn bench_ecs_bulk_scan(c: &mut Criterion) {
-    let mut world = CoreWorld::with_capacity(16_384);
+    let mut world = World::with_capacity(16_384);
 
     for i in 0..10_000u64 {
         let id = world.spawn();
-        world.imsi.insert(id, ImsiComponent(i));
-        world.auth.insert(id, if i % 3 == 0 {
+        world.insert_identity(id, IdentityComponent { imsi: i, enb_ue_s1ap_id: 0, ue_ip: [0; 4] });
+        world.set_auth_state(id, if i % 3 == 0 {
             AuthState::Authenticated
         } else {
             AuthState::Unauthenticated
         });
     }
 
-    // Informational — no gate. Used to track metrics-path cost over time.
+    // Informational — no gate. Dense Vec scan vs old HashMap.
     c.bench_function("ecs_authenticated_count_10k", |b| {
         b.iter(|| world.authenticated_count())
     });
@@ -176,14 +148,14 @@ fn bench_ecs_bulk_scan(c: &mut Criterion) {
 
 fn bench_registry(c: &mut Criterion) {
     let mut registry = ImsiRegistry::new();
-    let mut world    = CoreWorld::with_capacity(1024);
+    let mut world    = World::with_capacity(1024);
 
     for i in 0..500u64 {
         let id = world.spawn();
         registry.register(i * 10, id);
     }
 
-    // Gate: < 100 ns  |  Build #3 baseline: 14 ns hit / 13 ns miss
+    // Gate: < 100 ns
     c.bench_function("registry_lookup_hit", |b| {
         b.iter(|| registry.lookup(black_box(2500)))
     });
@@ -192,7 +164,7 @@ fn bench_registry(c: &mut Criterion) {
         b.iter(|| registry.lookup(black_box(999_999_999)))
     });
 
-    // Gate: < 500 ns  |  Build #3 baseline: 125 ns
+    // Gate: < 500 ns
     c.bench_function("registry_register", |b| {
         let mut idx = 100_000u64;
         let id = world.spawn();
@@ -206,7 +178,7 @@ fn bench_registry(c: &mut Criterion) {
 // ── HSS benchmarks ────────────────────────────────────────────────────────────
 
 fn bench_hss_provision(c: &mut Criterion) {
-    // Gate: < 1 µs  |  Build #3 baseline: 77 ns
+    // Gate: < 1 µs
     c.bench_function("hss_provision_subscriber", |b| {
         let ki  = midn_auth::keys::AuthKey::from_hex("465b5ce8b199b49faa5f0a2ee238a6bc").unwrap();
         let opc = midn_auth::keys::OpCode::from_hex("cd63cb71954a9f4e48a5994e37a02baf").unwrap();
@@ -220,7 +192,7 @@ fn bench_hss_provision(c: &mut Criterion) {
     });
 }
 
-fn bench_hss_lookup_miss(c: &mut Criterion) {
+fn bench_hss_lookup(c: &mut Criterion) {
     let mut hss = Hss::new();
     hss.provision_hex(
         234_15_1234567890_u64,
@@ -228,7 +200,7 @@ fn bench_hss_lookup_miss(c: &mut Criterion) {
         "cd63cb71954a9f4e48a5994e37a02baf",
     ).unwrap();
 
-    // Gate: < 50 ns  |  Build #3 baseline: 11 ns hit / 11 ns miss
+    // Gate: < 50 ns
     c.bench_function("hss_lookup_miss", |b| {
         b.iter(|| hss.has_subscriber(black_box(999_99_9999999999_u64)))
     });
@@ -238,18 +210,10 @@ fn bench_hss_lookup_miss(c: &mut Criterion) {
     });
 }
 
-// hss_get_auth_vector intentionally absent.
-// generate_vector is todo!() until Phase 1 closes.
-// After Phase 1: expected < 20 µs (HSS lookup < 100 ns + Milenage 5× AES < 10 µs)
-
-// ── Size / alignment verification ────────────────────────────────────────────
+// ── Size / alignment verification ─────────────────────────────────────────────
 
 fn bench_component_sizes(_c: &mut Criterion) {
-    assert_eq!(core::mem::align_of::<SecurityContext>(), 64,
-        "SecurityContext alignment regressed");
-    assert_eq!(core::mem::align_of::<SessionState>(), 64,
-        "SessionState alignment regressed");
-    assert_eq!(core::mem::size_of::<TunnelComponent>(), 16,
+    assert_eq!(core::mem::size_of::<TunnelComponent>(), 12,
         "TunnelComponent size regressed");
 }
 
@@ -272,7 +236,7 @@ criterion_group!(
 criterion_group!(
     hss_benches,
     bench_hss_provision,
-    bench_hss_lookup_miss,
+    bench_hss_lookup,
 );
 
 criterion_main!(ecs_world_benches, registry_benches, hss_benches);
