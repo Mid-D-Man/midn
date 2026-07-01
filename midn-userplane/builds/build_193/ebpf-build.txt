@@ -1,0 +1,7 @@
+[1m[33mwarning[0m: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   /home/runner/work/midn/midn/crates/midn-userplane-ebpf/Cargo.toml
+workspace: /home/runner/work/midn/midn/Cargo.toml
+[1m[92m   Compiling[0m midn-userplane v0.1.0 (/home/runner/work/midn/midn/crates/midn-userplane)
+[1m[33mwarning[0m: midn-userplane@0.1.0: Compiling midn-userplane-ebpf via "/home/runner/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/bin/cargo" (bpfel-unknown-none)…
+[1m[33mwarning[0m: midn-userplane@0.1.0: BPF object ready: "/home/runner/work/midn/midn/target/debug/build/midn-userplane-15c1206b4596ac31/out/midn_userplane_ebpf.bpf.o"
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 12.90s
