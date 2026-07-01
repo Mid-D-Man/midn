@@ -97,7 +97,7 @@ impl World {
 
     pub fn authenticated_count(&self) -> usize {
         self.live.iter().zip(self.auth.iter())
-            .filter(|(&live, &state)| live && state == AuthState::Authenticated)
+            .filter(|&(&live, &state)| live && state == AuthState::Authenticated)
             .count()
     }
 
