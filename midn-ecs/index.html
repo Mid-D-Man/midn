@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>midn-userplane — Test Results · Build #194</title>
+  <title>midn-ecs — Test Results · Build #194</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -128,7 +128,7 @@
   </div>
 
   <header>
-    <h1>midn-userplane <span>— Test Results</span></h1>
+    <h1>midn-ecs <span>— Test Results</span></h1>
     <p>Midn Core · Experimental LTE/5G Core Network · Build #194</p>
     <div class="meta">
       <div class="meta-item"><strong>Build:</strong> #194</div>
@@ -188,7 +188,7 @@
 
   <div id="suites-container"></div>
   <div class="no-results hidden" id="no-results">No tests match your filter.</div>
-  <footer>midn-userplane — Midn Core — Build #194</footer>
+  <footer>midn-ecs — Midn Core — Build #194</footer>
 </div>
 <div class="toast" id="toast"></div>
 
@@ -313,7 +313,7 @@ function checkNoResults() {
 }
 
 // Derive the JSON file name from the crate placeholder filled in by the workflow.
-const CRATE = 'midn-userplane';
+const CRATE = 'midn-ecs';
 fetch(`${CRATE}-test-results.json`)
   .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
   .then(data => renderAll(data))
