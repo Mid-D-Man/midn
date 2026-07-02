@@ -2,6 +2,7 @@
 members = [
     "crates/midn-auth",
     "crates/midn-proto",
+    "crates/midn-ecs",
     "crates/midn-core",
     "crates/midn-userplane",
     "crates/midn-userplane-ebpf",
