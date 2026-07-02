@@ -6,6 +6,7 @@
 #   push / pull_request with commit gate tokens:
 #     --midn-auth               — test midn-auth only
 #     --midn-proto              — test midn-proto only
+#     --midn-ecs                — test midn-ecs only
 #     --midn-core               — test midn-core only
 #     --midn-userplane          — test midn-userplane only
 #     --midn-all                — test all crates
@@ -39,6 +40,7 @@ jobs:
     outputs:
       run_auth:      ${{ steps.decide.outputs.run_auth }}
       run_proto:     ${{ steps.decide.outputs.run_proto }}
+      run_ecs:       ${{ steps.decide.outputs.run_ecs }}
       run_core:      ${{ steps.decide.outputs.run_core }}
       run_userplane: ${{ steps.decide.outputs.run_userplane }}
       run_any:       ${{ steps.decide.outputs.run_any }}
@@ -53,17 +55,19 @@ jobs:
         run: |
           AUTH=false
           PROTO=false
+          ECS=false
           CORE=false
           UP=false
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            AUTH=true; PROTO=true; CORE=true; UP=true
+            AUTH=true; PROTO=true; ECS=true; CORE=true; UP=true
 
           else
             MSG="${{ github.event.head_commit.message }}${{ github.event.pull_request.title }}"
-            echo "$MSG" | grep -qiE '\-\-midn-all\b'       && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
+            echo "$MSG" | grep -qiE '\-\-midn-all\b'       && { AUTH=true; PROTO=true; ECS=true; CORE=true; UP=true; } || true
             echo "$MSG" | grep -qiE '\-\-midn-auth\b'      && AUTH=true  || true
             echo "$MSG" | grep -qiE '\-\-midn-proto\b'     && PROTO=true || true
+            echo "$MSG" | grep -qiE '\-\-midn-ecs\b'       && ECS=true   || true
             echo "$MSG" | grep -qiE '\-\-midn-core\b'      && CORE=true  || true
             echo "$MSG" | grep -qiE '\-\-midn-userplane\b' && UP=true    || true
 
@@ -81,29 +85,34 @@ jobs:
 
               echo "$CHANGED" | grep -qE '^crates/midn-auth/'         && AUTH=true  || true
               echo "$CHANGED" | grep -qE '^crates/midn-proto/'        && PROTO=true || true
+              echo "$CHANGED" | grep -qE '^crates/midn-ecs/'          && ECS=true   || true
               echo "$CHANGED" | grep -qE '^crates/midn-core/'         && CORE=true  || true
               echo "$CHANGED" | grep -qE '^crates/midn-userplane[^-]' && UP=true    || true
 
               echo "$CHANGED" | grep -qE '^benches/auth_bench'        && AUTH=true  || true
               echo "$CHANGED" | grep -qE '^benches/proto_bench'       && PROTO=true || true
 
+              # midn-ecs is a dependency of midn-core — always re-test core alongside it.
+              [ "$ECS" = "true" ] && CORE=true || true
+
               echo "$CHANGED" | grep -qE \
                 '^Cargo\.toml$|^rust-toolchain\.toml$|^\.github/workflows/midn-test\.yml$' \
-                && { AUTH=true; PROTO=true; CORE=true; UP=true; } || true
+                && { AUTH=true; PROTO=true; ECS=true; CORE=true; UP=true; } || true
             fi
           fi
 
           ANY=false
-          [ "$AUTH" = "true" ] || [ "$PROTO" = "true" ] || \
+          [ "$AUTH" = "true" ] || [ "$PROTO" = "true" ] || [ "$ECS" = "true" ] || \
           [ "$CORE" = "true" ] || [ "$UP"   = "true" ]  && ANY=true || true
 
           echo "run_auth=$AUTH"       >> $GITHUB_OUTPUT
           echo "run_proto=$PROTO"     >> $GITHUB_OUTPUT
+          echo "run_ecs=$ECS"         >> $GITHUB_OUTPUT
           echo "run_core=$CORE"       >> $GITHUB_OUTPUT
           echo "run_userplane=$UP"    >> $GITHUB_OUTPUT
           echo "run_any=$ANY"         >> $GITHUB_OUTPUT
 
-          echo "Auth:$AUTH  Proto:$PROTO  Core:$CORE  Userplane:$UP  Any:$ANY"
+          echo "Auth:$AUTH  Proto:$PROTO  Ecs:$ECS  Core:$CORE  Userplane:$UP  Any:$ANY"
 
   # ── Run tests ─────────────────────────────────────────────────────────────────
   run-tests:
@@ -173,6 +182,11 @@ jobs:
         continue-on-error: true
         run: cargo clippy -p midn-proto -- -D warnings
 
+      - name: Clippy — midn-ecs
+        if: needs.parse-trigger.outputs.run_ecs == 'true'
+        continue-on-error: true
+        run: cargo clippy -p midn-ecs -- -D warnings
+
       - name: Clippy — midn-core
         if: needs.parse-trigger.outputs.run_core == 'true'
         continue-on-error: true
@@ -191,6 +205,10 @@ jobs:
       - name: Build midn-proto
         if: needs.parse-trigger.outputs.run_proto == 'true'
         run: cargo build -p midn-proto
+
+      - name: Build midn-ecs
+        if: needs.parse-trigger.outputs.run_ecs == 'true'
+        run: cargo build -p midn-ecs
 
       - name: Build midn-core
         if: needs.parse-trigger.outputs.run_core == 'true'
@@ -233,6 +251,15 @@ jobs:
             --color=never --no-fail-fast -- --show-output \
             2>&1 | tee midn-proto-test-raw.txt
           echo "PROTO_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
+
+      - name: Test midn-ecs [DEBUG]
+        if: needs.parse-trigger.outputs.run_ecs == 'true'
+        continue-on-error: true
+        run: |
+          cargo test -p midn-ecs \
+            --color=never --no-fail-fast -- --show-output \
+            2>&1 | tee midn-ecs-test-raw.txt
+          echo "ECS_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
 
       - name: Test midn-core [DEBUG]
         if: needs.parse-trigger.outputs.run_core == 'true'
@@ -294,6 +321,7 @@ jobs:
           RUST_VERSION: ${{ steps.rustver.outputs.ver }}
           RUN_AUTH:     ${{ needs.parse-trigger.outputs.run_auth }}
           RUN_PROTO:    ${{ needs.parse-trigger.outputs.run_proto }}
+          RUN_ECS:      ${{ needs.parse-trigger.outputs.run_ecs }}
           RUN_CORE:     ${{ needs.parse-trigger.outputs.run_core }}
           RUN_UP:       ${{ needs.parse-trigger.outputs.run_userplane }}
         run: |
@@ -393,6 +421,7 @@ jobs:
           crates_to_parse = [
               ('RUN_AUTH',  'midn-auth-test-raw.txt',       'midn-auth'),
               ('RUN_PROTO', 'midn-proto-test-raw.txt',      'midn-proto'),
+              ('RUN_ECS',   'midn-ecs-test-raw.txt',        'midn-ecs'),
               ('RUN_CORE',  'midn-core-test-raw.txt',       'midn-core'),
               ('RUN_UP',    'midn-userplane-test-raw.txt',  'midn-userplane'),
           ]
@@ -420,7 +449,7 @@ jobs:
         env:
           RUST_VERSION: ${{ steps.rustver.outputs.ver }}
         run: |
-          for CRATE in midn-auth midn-proto midn-core midn-userplane; do
+          for CRATE in midn-auth midn-proto midn-ecs midn-core midn-userplane; do
             if [ -f "${CRATE}-test-results.json" ]; then
               cp .github/midn-test-template.html "${CRATE}-test-index.html"
               sed -i "s/CRATE_PLACEHOLDER/${CRATE}/g"                     "${CRATE}-test-index.html"
@@ -585,7 +614,7 @@ jobs:
             git worktree add --orphan -b gh-pages "$WORK"
           fi
 
-          for CRATE in midn-auth midn-proto midn-core midn-userplane; do
+          for CRATE in midn-auth midn-proto midn-ecs midn-core midn-userplane; do
             JSON="deploy/${CRATE}-test-results.json"
             HTML="deploy/${CRATE}-test-index.html"
 
@@ -640,11 +669,12 @@ jobs:
           echo "Crates triggered:"
           echo "  midn-auth:      ${{ needs.parse-trigger.outputs.run_auth }}"
           echo "  midn-proto:     ${{ needs.parse-trigger.outputs.run_proto }}"
+          echo "  midn-ecs:       ${{ needs.parse-trigger.outputs.run_ecs }}"
           echo "  midn-core:      ${{ needs.parse-trigger.outputs.run_core }}"
           echo "  midn-userplane: ${{ needs.parse-trigger.outputs.run_userplane }}"
           echo ""
           if [ "${{ needs.parse-trigger.outputs.run_any }}" != "true" ]; then
             echo "Not triggered. Either use a commit token:"
-            echo "  --midn-auth  --midn-proto  --midn-core  --midn-userplane  --midn-all"
+            echo "  --midn-auth  --midn-proto  --midn-ecs  --midn-core  --midn-userplane  --midn-all"
             echo "Or touch any source file under crates/midn-*/ (auto-detected)."
           fi
