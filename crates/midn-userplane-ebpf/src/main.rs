@@ -1,5 +1,5 @@
 // crates/midn-userplane-ebpf/src/main.rs
-//! midn-userplane-ebpf — XDP kernel program
+//! midn-userplane-ebpf — XDP kernel program(s)
 //!
 //! This code runs INSIDE the Linux kernel at the NIC driver hook point.
 //! Constraints:
@@ -11,17 +11,27 @@
 //!
 //! ## XDP action meanings
 //!
-//!   XDP_PASS    — hand packet to normal kernel networking stack
-//!   XDP_DROP    — discard packet (fastest path)
-//!   XDP_TX      — retransmit packet out the same NIC (with modified headers)
+//!   XDP_PASS     — hand packet to normal kernel networking stack
+//!   XDP_DROP     — discard packet (fastest path)
+//!   XDP_TX       — retransmit packet out the same NIC (with modified headers)
 //!   XDP_REDIRECT — send to another NIC or CPU queue
 //!
-//! ## Current behaviour (Phase 3.0)
+//! ## Two independent programs, one compiled object
 //!
-//! Steps 1–6 of the GTP-U decision tree are active:
-//!   ETH → IPv4 → UDP:2152 → GTP-U header → G-PDU check → TEID map lookup.
-//! On a TEID hit, the packet still returns XDP_PASS so the userspace
-//! `GtpForwarder` handles it. Phase 3.1 activates XDP_TX with header rewrite.
+//! `midn_gtp_xdp` (UL, `gtp_xdp.rs`) — attached to the eNodeB-facing interface.
+//!   Strips GTP-U tunnel headers from UE→internet traffic and XDP_TX's the
+//!   inner IP packet toward the PDN gateway. Phase 3.1 — complete.
+//!
+//! `midn_gtp_dl_xdp` (DL, `gtp_dl_xdp.rs`) — attached to the PDN-facing
+//!   interface. Wraps internet→UE traffic in a new GTP-U tunnel and
+//!   XDP_REDIRECTs it toward the eNodeB-facing interface. Phase 3.2 — active.
+//!
+//! Both live in this single `[[bin]]` — aya-build compiles one ELF object
+//! with one section per `#[xdp]` function, and userspace loads each by name
+//! independently (`BpfHandle::attach` for UL, `BpfHandle::attach_dl` for DL)
+//! via `bpf.program_mut("midn_gtp_xdp")` / `bpf.program_mut("midn_gtp_dl_xdp")`
+//! against the one loaded `aya::Ebpf` object. No build.rs or Cargo.toml
+//! changes were needed to add the second program.
 //!
 //! ## Build (requires nightly + bpf-linker)
 //!
@@ -40,16 +50,31 @@
 use aya_ebpf::{macros::xdp, programs::XdpContext};
 use aya_ebpf::bindings::xdp_action;
 
+mod gtp_dl_xdp;
 mod gtp_xdp;
 mod maps;
 
-/// XDP hook — called for every incoming packet at NIC driver speed.
+/// UL XDP hook — eNodeB-facing interface. Called for every incoming packet
+/// at NIC driver speed. Delegates to `gtp_xdp::process`.
 ///
-/// Delegates to `gtp_xdp::process`. On any parse error the packet is
-/// passed to the kernel — a parse failure never silently drops traffic.
+/// On any parse error the packet is passed to the kernel — a parse failure
+/// never silently drops traffic.
 #[xdp]
 pub fn midn_gtp_xdp(ctx: XdpContext) -> u32 {
     match gtp_xdp::process(ctx) {
+        Ok(action) => action,
+        Err(_)     => xdp_action::XDP_PASS,
+    }
+}
+
+/// DL XDP hook — PDN-facing interface. Called for every incoming packet at
+/// NIC driver speed. Delegates to `gtp_dl_xdp::process_dl`.
+///
+/// On any parse error, or if `bpf_redirect` itself fails, the packet is
+/// passed to the kernel rather than dropped.
+#[xdp]
+pub fn midn_gtp_dl_xdp(ctx: XdpContext) -> u32 {
+    match gtp_dl_xdp::process_dl(ctx) {
         Ok(action) => action,
         Err(_)     => xdp_action::XDP_PASS,
     }
@@ -62,4 +87,4 @@ pub fn midn_gtp_xdp(ctx: XdpContext) -> u32 {
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo) -> ! {
     loop {}
-}
+               }
