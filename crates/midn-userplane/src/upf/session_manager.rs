@@ -40,25 +40,33 @@
 //! ## BPF fast-path wiring
 //!
 //! Call `set_bpf_handle(bpf)` at UPF startup after `load_xdp` and
-//! `set_pdn_gw_config` succeed. All subsequent session lifecycle calls
-//! automatically mirror state into the kernel `TEID_TO_ROUTE` BPF map:
+//! `set_pdn_gw_config` succeed (and, if the Phase 3.2 DL path is active,
+//! after `attach_dl` and `set_dl_tunnel_config` too). All subsequent session
+//! lifecycle calls automatically mirror state into BOTH kernel BPF maps —
+//! `TEID_TO_ROUTE` (UL, keyed by `ul_teid`) and `UE_IP_TO_ROUTE` (DL, keyed
+//! by `ue_ip`) — since both carry the exact same `XdpRouteEntry` shape for a
+//! given session, just indexed differently for each direction's lookup:
 //!
 //! ```text
-//! CreateSession   → insert_teid(ul_teid, dl_teid=0 placeholder)
-//! UpdateBearer    → insert_teid(ul_teid, real dl_teid + enb_addr)  ← Rule 3
-//! RemoveSession   → remove_teid(ul_teid)
+//! CreateSession   → insert_teid(ul_teid, placeholder)  + insert_ue_route(ue_ip, placeholder)
+//! UpdateBearer    → insert_teid(ul_teid, real entry)   + insert_ue_route(ue_ip, real entry)  ← Rule 3
+//! RemoveSession   → remove_teid(ul_teid)               + remove_ue_route(ue_ip)
 //! ```
 //!
 //! With no BpfHandle set (`bpf = None`), all BPF calls are skipped silently —
 //! the userspace `GtpForwarder` handles all packets. This is the default on
-//! non-Linux and during Phase 3.1 bring-up before `load_xdp` succeeds.
+//! non-Linux and during Phase 3.1/3.2 bring-up before `load_xdp`/`attach_dl`
+//! succeed.
 //!
 //! ## Rule 3 compliance
 //!
 //! `update_bearer_info` fires from `UpfEvent::UpdateBearer`, which the MME
 //! emits from `handle_icsrsp`. This runs AFTER the eNodeB sends
 //! `InitialContextSetupResponse` and BEFORE it delivers `AttachAccept` to
-//! the UE via RRC. No UL packet can arrive before the BPF map entry exists.
+//! the UE via RRC. No UL or DL packet can arrive before both BPF map entries
+//! exist — `TEID_TO_ROUTE` and `UE_IP_TO_ROUTE` are updated in the same call,
+//! so there's no window where one map has the real entry and the other still
+//! has the placeholder.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -108,20 +116,31 @@ impl SessionManager {
     /// Wire a loaded XDP program and its BPF maps into this session manager.
     ///
     /// Call at UPF startup after `load_xdp(iface).await?` and
-    /// `bpf.set_pdn_gw_config(cfg)?` have both succeeded:
+    /// `bpf.set_pdn_gw_config(cfg)?` have both succeeded. If the Phase 3.2 DL
+    /// path is also in use, call `bpf.attach_dl(pdn_iface).await?` and
+    /// `bpf.set_dl_tunnel_config(cfg)?` first too — this handle mirrors into
+    /// both `TEID_TO_ROUTE` and `UE_IP_TO_ROUTE` unconditionally, so if the DL
+    /// program was never attached, `UE_IP_TO_ROUTE` writes simply populate a
+    /// map nothing reads yet (harmless):
     ///
     /// ```rust,ignore
     /// let mut bpf = load_xdp("eth0").await?;
     /// bpf.set_pdn_gw_config(&PdnGwConfig::new(gw_mac, nic_mac))?;
+    /// bpf.attach_dl("eth1").await?;
+    /// bpf.set_dl_tunnel_config(&DlTunnelConfig::new(enb_mac, pdn_nic_mac, upf_ip, ifindex))?;
     /// session_manager.set_bpf_handle(bpf);
     /// ```
     ///
     /// After this call, `create_session_with_teid`, `update_bearer_info`, and
-    /// `remove_session` will automatically mirror session state into the kernel
-    /// `TEID_TO_ROUTE` BPF hash map, enabling XDP_TX fast-path forwarding.
+    /// `remove_session` will automatically mirror session state into both
+    /// kernel BPF hash maps, enabling XDP_TX (UL) and XDP_REDIRECT (DL)
+    /// fast-path forwarding.
     pub fn set_bpf_handle(&mut self, bpf: BpfHandle) {
         self.bpf = Some(bpf);
-        tracing::info!("BPF handle wired — XDP TEID_TO_ROUTE will be populated for new sessions");
+        tracing::info!(
+            "BPF handle wired — XDP TEID_TO_ROUTE and UE_IP_TO_ROUTE will be \
+             populated for new sessions"
+        );
     }
 
     /// Returns `true` if a BPF handle is active (XDP fast path enabled).
@@ -156,9 +175,14 @@ impl SessionManager {
     /// `dl_teid` and `enb_addr` are zero/placeholder at this point — they are
     /// updated to real values by `update_bearer_info` after ICSRSP arrives.
     ///
-    /// BPF: inserts a placeholder entry (dl_teid = 0) into `TEID_TO_ROUTE`.
-    /// The XDP program will see the TEID and XDP_PASS (since dl_teid = 0 means
-    /// it cannot yet encapsulate DL packets) until `update_bearer_info` fires.
+    /// BPF: inserts a placeholder entry (dl_teid = 0) into BOTH
+    /// `TEID_TO_ROUTE` (keyed by `ul_teid`) and `UE_IP_TO_ROUTE` (keyed by
+    /// `ue_ip`). The UL XDP program sees the TEID and XDP_PASSes (dl_teid
+    /// unused for UL forwarding, but placeholder still gates correctly per
+    /// Rule 3 doc). The DL XDP program explicitly checks `dl_teid == 0` and
+    /// XDP_PASSes until `update_bearer_info` fires — see `gtp_dl_xdp.rs`
+    /// module doc for why the DL side needs that explicit check where the UL
+    /// side doesn't.
     pub fn create_session_with_teid(
         &mut self,
         ul_teid:   u32,
@@ -170,11 +194,12 @@ impl SessionManager {
     ) {
         self.install(ul_teid, entity_id, imsi, ue_ip, 0, enb_addr, qci);
 
-        // Install placeholder BPF map entry — dl_teid = 0, enb_addr as provided.
-        // XDP will XDP_PASS packets for this TEID until UpdateBearer fires.
+        // Install placeholder BPF map entries — dl_teid = 0, enb_addr as
+        // provided — into both the UL (TEID-keyed) and DL (UE-IP-keyed) maps.
         #[cfg(target_os = "linux")]
         if let Some(ref mut bpf) = self.bpf {
             let xdp_entry = XdpRouteEntry::new(0, enb_addr, 2152);
+
             if let Err(e) = bpf.insert_teid(ul_teid, &xdp_entry) {
                 tracing::warn!(
                     ul_teid, error = %e,
@@ -182,6 +207,15 @@ impl SessionManager {
                 );
             } else {
                 tracing::debug!(ul_teid, "BPF TEID_TO_ROUTE placeholder inserted");
+            }
+
+            if let Err(e) = bpf.insert_ue_route(ue_ip, &xdp_entry) {
+                tracing::warn!(
+                    ul_teid, ue_ip = ?ue_ip, error = %e,
+                    "BPF UE_IP_TO_ROUTE placeholder insert failed (CreateSession)"
+                );
+            } else {
+                tracing::debug!(ul_teid, ue_ip = ?ue_ip, "BPF UE_IP_TO_ROUTE placeholder inserted");
             }
         }
 
@@ -210,10 +244,12 @@ impl SessionManager {
     /// Called when processing `UpfEvent::UpdateBearer`. Atomically replaces the
     /// routing entry so `GtpForwarder` never observes a partial update.
     ///
-    /// BPF (Rule 3): atomically overwrites the placeholder BPF map entry with
-    /// the real `dl_teid` + `enb_addr` (BPF_ANY, flags=0). After this returns,
-    /// the XDP program can fast-path UL packets for this TEID via XDP_TX.
-    /// This fires before AttachAccept reaches the UE — no packet races.
+    /// BPF (Rule 3): atomically overwrites the placeholder entries in BOTH
+    /// `TEID_TO_ROUTE` and `UE_IP_TO_ROUTE` with the real `dl_teid` +
+    /// `enb_addr` (BPF_ANY, flags=0). After this returns, the UL XDP program
+    /// can fast-path via XDP_TX and the DL XDP program can fast-path via
+    /// XDP_REDIRECT for this session. This fires before AttachAccept reaches
+    /// the UE — no packet in either direction races the map entries.
     ///
     /// Returns `false` if no session exists for `ul_teid`.
     pub fn update_bearer_info(
@@ -245,10 +281,12 @@ impl SessionManager {
             s.enb_addr = enb_addr;
         }
 
-        // Atomic BPF map overwrite — Rule 3: this fires before AttachAccept delivery.
+        // Atomic BPF map overwrite — Rule 3: this fires before AttachAccept
+        // delivery. Updates both maps with the same real entry.
         #[cfg(target_os = "linux")]
         if let Some(ref mut bpf) = self.bpf {
             let xdp_entry = XdpRouteEntry::new(dl_teid, enb_addr, 2152);
+
             if let Err(e) = bpf.insert_teid(ul_teid, &xdp_entry) {
                 tracing::warn!(
                     ul_teid, dl_teid, error = %e,
@@ -257,7 +295,19 @@ impl SessionManager {
             } else {
                 tracing::debug!(
                     ul_teid, dl_teid, enb_addr = ?enb_addr,
-                    "BPF TEID_TO_ROUTE updated — XDP fast path active for this session"
+                    "BPF TEID_TO_ROUTE updated — UL XDP fast path active for this session"
+                );
+            }
+
+            if let Err(e) = bpf.insert_ue_route(current.ue_ip, &xdp_entry) {
+                tracing::warn!(
+                    ul_teid, dl_teid, ue_ip = ?current.ue_ip, error = %e,
+                    "BPF UE_IP_TO_ROUTE real-entry insert failed (UpdateBearer)"
+                );
+            } else {
+                tracing::debug!(
+                    ul_teid, dl_teid, ue_ip = ?current.ue_ip, enb_addr = ?enb_addr,
+                    "BPF UE_IP_TO_ROUTE updated — DL XDP fast path active for this session"
                 );
             }
         }
@@ -273,16 +323,22 @@ impl SessionManager {
 
     /// Remove a session on detach or `UpfEvent::RemoveSession`.
     ///
-    /// BPF: removes the entry from `TEID_TO_ROUTE`. After this, UL packets for
-    /// this TEID return `XDP_PASS` and are handled (or dropped) by userspace.
+    /// BPF: removes the entry from BOTH `TEID_TO_ROUTE` and `UE_IP_TO_ROUTE`.
+    /// After this, UL packets for this TEID and DL packets for this UE both
+    /// return `XDP_PASS` and are handled (or dropped) by userspace.
     ///
     /// The freed `ul_teid` goes back into the free list so a future
     /// `create_session` call can reuse it instead of growing the counter
     /// forever. Returns the session record for billing/audit purposes.
     pub fn remove_session(&mut self, ul_teid: u32) -> Option<UserPlaneSession> {
+        // Snapshot ue_ip before removing from the routing table, so we can
+        // still key the UE_IP_TO_ROUTE deletion after `rt.remove` runs.
+        let ue_ip = self.sessions.get(&ul_teid).map(|s| s.ue_ip);
+
         self.routing.lock().unwrap().remove(ul_teid);
 
-        // Remove BPF map entry so XDP stops matching this TEID.
+        // Remove BPF map entries so neither XDP program matches this session
+        // anymore.
         #[cfg(target_os = "linux")]
         if let Some(ref mut bpf) = self.bpf {
             if let Err(e) = bpf.remove_teid(ul_teid) {
@@ -290,6 +346,14 @@ impl SessionManager {
                     ul_teid, error = %e,
                     "BPF TEID_TO_ROUTE remove failed (RemoveSession)"
                 );
+            }
+            if let Some(ip) = ue_ip {
+                if let Err(e) = bpf.remove_ue_route(ip) {
+                    tracing::warn!(
+                        ul_teid, ue_ip = ?ip, error = %e,
+                        "BPF UE_IP_TO_ROUTE remove failed (RemoveSession)"
+                    );
+                }
             }
         }
 
@@ -612,5 +676,42 @@ mod tests {
         m.remove_session(ext_teid);
         let next = m.create_session(0, 2, [10, 0, 0, 2], 0, [1, 1, 1, 1], 9);
         assert_eq!(next, ext_teid);
+    }
+
+    // ── DL (UE_IP_TO_ROUTE) mirroring — bpf = None path ──────────────────────
+    //
+    // With no BpfHandle wired (the default in every unit test — a real
+    // aya::Ebpf requires root + a real Linux kernel), the `#[cfg(target_os =
+    // "linux")] if let Some(ref mut bpf) = self.bpf` blocks are simply
+    // skipped. These tests confirm the plain (non-BPF) session/routing state
+    // is unaffected by the new UE_IP_TO_ROUTE calls added alongside the
+    // existing TEID_TO_ROUTE ones — i.e. adding the DL mirroring didn't
+    // change any pre-existing behavior on the path every unit test exercises.
+
+    #[test]
+    fn dl_mirroring_does_not_affect_session_state_without_bpf() {
+        let mut m   = mgr();
+        let ul_teid = 0x0004_0000_u32;
+        m.create_session_with_teid(ul_teid, 0, 1, [10, 2, 0, 1], [0; 4], 9);
+        m.update_bearer_info(ul_teid, 0xABCD_0001, [172, 16, 5, 5]);
+
+        let s = m.get_session(ul_teid).unwrap();
+        assert_eq!(s.ue_ip,    [10, 2, 0, 1]);
+        assert_eq!(s.dl_teid,  0xABCD_0001);
+        assert_eq!(s.enb_addr, [172, 16, 5, 5]);
+        assert!(!m.has_bpf(), "no BpfHandle wired in this test — UE_IP_TO_ROUTE calls are skipped");
+    }
+
+    #[test]
+    fn remove_session_snapshots_ue_ip_before_routing_table_removal() {
+        // Regression guard: remove_session must read the session's ue_ip
+        // BEFORE clearing the routing table entry, since the (bpf-enabled)
+        // UE_IP_TO_ROUTE removal needs that ue_ip and the session map entry
+        // is what remove_session's own return value is built from.
+        let mut m   = mgr();
+        let ul_teid = 0x0005_0000_u32;
+        m.create_session_with_teid(ul_teid, 0, 1, [10, 3, 0, 1], [0; 4], 9);
+        let rec = m.remove_session(ul_teid).unwrap();
+        assert_eq!(rec.ue_ip, [10, 3, 0, 1]);
     }
 }
