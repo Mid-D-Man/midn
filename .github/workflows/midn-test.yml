@@ -87,7 +87,7 @@ jobs:
               echo "$CHANGED" | grep -qE '^crates/midn-proto/'        && PROTO=true || true
               echo "$CHANGED" | grep -qE '^crates/midn-ecs/'          && ECS=true   || true
               echo "$CHANGED" | grep -qE '^crates/midn-core/'         && CORE=true  || true
-              echo "$CHANGED" | grep -qE '^crates/midn-userplane[^-]' && UP=true    || true
+              echo "$CHANGED" | grep -qE '^crates/midn-userplane(-ebpf)?/' && UP=true || true
 
               echo "$CHANGED" | grep -qE '^benches/auth_bench'        && AUTH=true  || true
               echo "$CHANGED" | grep -qE '^benches/proto_bench'       && PROTO=true || true
