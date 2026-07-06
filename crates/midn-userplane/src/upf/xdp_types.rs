@@ -1,25 +1,29 @@
 // crates/midn-userplane/src/upf/xdp_types.rs
 //! Userspace mirrors of kernel-side BPF map value types.
 //!
-//! | Struct          | Kernel counterpart     | Map             | Size  |
-//! |-----------------|------------------------|-----------------|-------|
-//! | `XdpRouteEntry` | `maps::XdpRouteEntry`  | `TEID_TO_ROUTE` | 12 B  |
-//! | `PdnGwConfig`   | `maps::PdnGwConfig`    | `PDN_GW_CONFIG` | 16 B  |
+//! | Struct           | Kernel counterpart      | Map               | Size  |
+//! |------------------|-------------------------|--------------------|-------|
+//! | `XdpRouteEntry`  | `maps::XdpRouteEntry`   | `TEID_TO_ROUTE`,  | 12 B  |
+//! |                  |                         | `UE_IP_TO_ROUTE`  |       |
+//! | `PdnGwConfig`    | `maps::PdnGwConfig`     | `PDN_GW_CONFIG`   | 16 B  |
+//! | `DlTunnelConfig` | `maps::DlTunnelConfig`  | `DL_TUNNEL_CONFIG`| 20 B  |
 //!
-//! Both structs MUST remain byte-for-byte identical to their counterparts in
+//! All structs MUST remain byte-for-byte identical to their counterparts in
 //! `crates/midn-userplane-ebpf/src/maps.rs`: `#[repr(C)]`, same field order,
 //! explicit padding. The layout tests below catch regressions on the userspace
 //! side (the ebpf crate has no_std and cannot run tests).
 
 // ── XdpRouteEntry ─────────────────────────────────────────────────────────────
 
-/// Per-session routing entry written into the kernel `TEID_TO_ROUTE` BPF map.
+/// Per-session routing entry written into the kernel `TEID_TO_ROUTE` and
+/// `UE_IP_TO_ROUTE` BPF maps.
 ///
-/// Written by `BpfHandle::insert_teid`:
+/// Written by `BpfHandle::insert_teid` / `BpfHandle::insert_ue_route`:
 ///   - On `CreateSession`: dl_teid = 0 placeholder (map entry exists; XDP
-///     passes until bearer is confirmed, safe per Rule 3).
+///     passes until bearer confirmed, safe per Rule 3).
 ///   - On `UpdateBearer`: real dl_teid + enb_addr (atomic BPF_ANY overwrite).
-///   - On `RemoveSession`: entry deleted via `BpfHandle::remove_teid`.
+///   - On `RemoveSession`: entry deleted via `BpfHandle::remove_teid` /
+///     `BpfHandle::remove_ue_route`.
 ///
 /// Size: 12 bytes. Align: 4 (natural alignment of u32).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +102,72 @@ impl PdnGwConfig {
 #[cfg(target_os = "linux")]
 unsafe impl aya::Pod for PdnGwConfig {}
 
+// ── DlTunnelConfig ────────────────────────────────────────────────────────────
+
+/// Ethernet + IP + redirect parameters for the DL GTP-U encapsulation fast
+/// path (Phase 3.2) — written into the kernel `DL_TUNNEL_CONFIG` BPF array
+/// map at index 0 during UPF startup via `BpfHandle::set_dl_tunnel_config`.
+///
+/// The DL XDP program (`midn_gtp_dl_xdp`, attached to the PDN-facing
+/// interface) reads this once per UE-IP hit to construct the new outer
+/// ETH/IP headers and to know which interface to `bpf_redirect` into.
+///
+/// ## Initialization order
+///
+/// 1. `load_xdp(iface)` loads both programs; `DL_TUNNEL_CONFIG` map is zeroed.
+/// 2. `BpfHandle::attach_dl(pdn_iface)` attaches `midn_gtp_dl_xdp`.
+/// 3. `BpfHandle::set_dl_tunnel_config(cfg)` writes real MACs/IP/ifindex.
+/// 4. DL XDP program reads `DL_TUNNEL_CONFIG.get(0)` — returns `None` until
+///    written (all-zero, `redirect_ifindex = 0` is not a valid ifindex),
+///    which causes the DL XDP program to fall through to `XDP_PASS`.
+///
+/// ## How to get the values
+///
+/// ```bash
+/// # eth_dst_mac — eNodeB, or next-hop router toward it, from the
+/// # PDN-facing side's perspective is irrelevant; this is looked up on
+/// # whatever interface faces the eNodeB:
+/// ip neigh show <enb_ip_or_next_hop>
+///
+/// # eth_src_mac — the eNodeB-facing NIC MAC
+/// ip link show <enb_facing_iface> | awk '/ether/ {print $2}'
+///
+/// # upf_ip — the UPF's own transport IPv4 address on that interface
+/// ip -4 addr show <enb_facing_iface> | awk '/inet /{print $2}' | cut -d/ -f1
+///
+/// # redirect_ifindex
+/// ip link show <enb_facing_iface> | head -1 | cut -d: -f1
+/// ```
+///
+/// Size: 20 bytes (6 + 6 + 4 + 4). Align: 4.
+/// Must match `DlTunnelConfig` in `crates/midn-userplane-ebpf/src/maps.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(C)]
+pub struct DlTunnelConfig {
+    /// Ethernet dst MAC — eNodeB, or next-hop router toward the eNodeB.
+    pub eth_dst_mac:      [u8; 6],
+    /// Ethernet src MAC — the eNodeB-facing NIC interface MAC.
+    pub eth_src_mac:      [u8; 6],
+    /// UPF's own transport IPv4 address (outer IP src for the DL tunnel).
+    pub upf_ip:           [u8; 4],
+    /// ifindex of the eNodeB-facing interface, for `bpf_redirect`.
+    pub redirect_ifindex: u32,
+}
+
+impl DlTunnelConfig {
+    pub fn new(
+        eth_dst_mac: [u8; 6],
+        eth_src_mac: [u8; 6],
+        upf_ip:      [u8; 4],
+        redirect_ifindex: u32,
+    ) -> Self {
+        Self { eth_dst_mac, eth_src_mac, upf_ip, redirect_ifindex }
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl aya::Pod for DlTunnelConfig {}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -174,5 +244,50 @@ mod tests {
             core::mem::size_of_val(&e), 12,
             "no hidden padding between fields"
         );
+    }
+
+    // ── DlTunnelConfig ────────────────────────────────────────────────────────
+
+    #[test]
+    fn dl_tunnel_config_layout() {
+        assert_eq!(
+            core::mem::size_of::<DlTunnelConfig>(), 20,
+            "DlTunnelConfig must be 20 bytes to match kernel struct"
+        );
+        assert_eq!(
+            core::mem::align_of::<DlTunnelConfig>(), 4,
+            "DlTunnelConfig must align to 4 bytes (redirect_ifindex: u32)"
+        );
+    }
+
+    #[test]
+    fn dl_tunnel_config_field_offsets_have_no_gaps() {
+        // eth_dst_mac(6) + eth_src_mac(6) = 12, already 4-byte aligned, so
+        // upf_ip([u8;4], align 1) needs no padding before it, and
+        // redirect_ifindex(u32, align 4) lands at offset 16 — also aligned.
+        // Total: 12 + 4 + 4 = 20, matching size_of above with zero slack.
+        let c = DlTunnelConfig::new([0; 6], [0; 6], [0; 4], 0);
+        assert_eq!(core::mem::size_of_val(&c), 20, "no hidden padding between fields");
+    }
+
+    #[test]
+    fn dl_tunnel_config_new_roundtrip() {
+        let c = DlTunnelConfig::new(
+            [0x00, 0x11, 0x22, 0x33, 0x44, 0x55],
+            [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+            [10, 0, 0, 1],
+            3,
+        );
+        assert_eq!(c.eth_dst_mac,      [0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
+        assert_eq!(c.eth_src_mac,      [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        assert_eq!(c.upf_ip,           [10, 0, 0, 1]);
+        assert_eq!(c.redirect_ifindex, 3);
+    }
+
+    #[test]
+    fn dl_tunnel_config_copy() {
+        let a = DlTunnelConfig::new([1; 6], [2; 6], [10, 0, 0, 1], 2);
+        let b = a;
+        assert_eq!(a, b);
     }
     }
