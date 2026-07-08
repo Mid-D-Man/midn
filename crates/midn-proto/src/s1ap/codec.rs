@@ -47,7 +47,7 @@ use bytes::Bytes;
 use crate::error::{ProtoError, Result};
 use crate::s1ap::ie_ids as ie;
 use crate::s1ap::messages::{DownlinkNasTransport, InitialUeMessage, S1apMessage, UplinkNasTransport};
-use crate::s1ap::per::{PerReader, PerWriter};
+use crate::per::{PerReader, PerWriter};
 
 const PDU_CHOICE_INITIATING_MESSAGE: u64 = 0;
 
@@ -470,4 +470,4 @@ mod tests {
         let bytes = encode_pdu_wrapper(250, ie::CRITICALITY_IGNORE, &value_w.into_bytes());
         assert!(decode_s1ap_pdu(&bytes).is_err());
     }
-}
+    }
