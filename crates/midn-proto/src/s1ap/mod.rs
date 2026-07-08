@@ -4,18 +4,28 @@
 //! `messages` defines the in-process message structs the MME state machine
 //! already operates on (in-process mock eNodeB, no real transport yet).
 //!
-//! `per` + `ie_ids` + `codec` add a real ASN.1 ALIGNED PER wire encoder/
-//! decoder on top of those structs. See `codec` module docs for current
-//! scope (InitialUEMessage/Uplink/DownlinkNASTransport only) and the
-//! spec-fidelity disclaimer in `ie_ids` before relying on this for actual
-//! eNodeB hardware. Not yet wired into `Mme::process_s1ap` — that still
-//! takes in-process structs; plugging `encode_s1ap_pdu`/`decode_s1ap_pdu`
-//! into a real SCTP transport boundary is a separate next step.
+//! `ie_ids` + `codec` add a real ASN.1 ALIGNED PER wire encoder/decoder on
+//! top of those structs, built on the shared bit-packing engine at
+//! `crate::per` (moved there since NGAP uses the identical ALIGNED PER
+//! rules — see `crate::per` module docs). See `codec` module docs for
+//! current scope (InitialUEMessage/Uplink/DownlinkNASTransport only) and
+//! the spec-fidelity disclaimer in `ie_ids` before relying on this for
+//! actual eNodeB hardware. Not yet wired into `Mme::process_s1ap` — that
+//! still takes in-process structs; plugging `encode_s1ap_pdu`/
+//! `decode_s1ap_pdu` into a real SCTP transport boundary is a separate
+//! next step.
 
 pub mod codec;
 pub mod ie_ids;
 pub mod messages;
-pub mod per;
+
+/// Re-export for source compatibility — the PER engine used to live here.
+/// New code should use `crate::per` directly; this module now just points
+/// at it so `midn_proto::s1ap::per::PerWriter` (if anything external still
+/// imports that path) keeps working unchanged.
+pub mod per {
+    pub use crate::per::*;
+}
 
 pub use codec::{decode_s1ap_pdu, encode_s1ap_pdu};
 pub use messages::{
