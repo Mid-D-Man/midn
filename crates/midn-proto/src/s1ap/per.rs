@@ -1,4 +1,4 @@
-// crates/midn-proto/src/s1ap/per.rs
+// crates/midn-proto/src/per.rs
 //! Generic ASN.1 ALIGNED PER (Packed Encoding Rules) primitives — ITU-T X.691.
 //!
 //! This implements the core ALIGNED-variant bit-packing rules used by S1AP/
