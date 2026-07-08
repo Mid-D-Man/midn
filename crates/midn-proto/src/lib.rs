@@ -10,6 +10,10 @@
 //! | NGAP     | Signaling | gNodeB ↔ AMF (5G NR) |
 //! | GTP-U    | Data      | Tunnel encapsulation for user data |
 //!
+//! `per` is the shared ASN.1 ALIGNED PER (ITU-T X.691) bit-packing engine —
+//! S1AP and NGAP both build their wire codecs on top of it, since both
+//! protocols use the identical PER variant. See `per` module docs.
+//!
 //! ## Zero-copy design
 //!
 //! GTP-U parsing is zero-copy: `GtpuHeader::parse` and `GtpuParser::parse`
@@ -20,6 +24,7 @@ pub mod error;
 pub mod gtp;
 pub mod nas;
 pub mod ngap;
+pub mod per;
 pub mod s1ap;
 
 pub use error::ProtoError;
