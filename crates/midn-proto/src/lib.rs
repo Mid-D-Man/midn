@@ -5,7 +5,8 @@
 //!
 //! | Protocol | Layer     | Purpose |
 //! |----------|-----------|---------|
-//! | NAS      | Signaling | UE ↔ MME/AMF: attach, auth, session |
+//! | NAS      | Signaling | UE ↔ MME: attach, auth, session (LTE, TS 24.301) |
+//! | NAS-5GS  | Signaling | UE ↔ AMF: registration, auth, session (5G, TS 24.501) |
 //! | S1AP     | Signaling | eNodeB ↔ MME (LTE) |
 //! | NGAP     | Signaling | gNodeB ↔ AMF (5G NR) |
 //! | GTP-U    | Data      | Tunnel encapsulation for user data |
@@ -23,6 +24,7 @@
 pub mod error;
 pub mod gtp;
 pub mod nas;
+pub mod nas5gs;
 pub mod ngap;
 pub mod per;
 pub mod s1ap;
@@ -31,4 +33,5 @@ pub use error::ProtoError;
 pub use gtp::header::GtpuHeader;
 pub use gtp::parser::{GtpuPacket, GtpuParser};
 pub use nas::messages::NasMessage;
+pub use nas5gs::messages::Nas5gsMessage;
 pub use s1ap::messages::S1apMessage;
