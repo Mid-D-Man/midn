@@ -1,25 +1,25 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-06-30T13:10:02Z"
+  generated  -> "2026-07-12T17:04:30Z"
   debug_mode -> "off"
 )
 
 @DATA(
-  template      = ".mdix/patches/patch.mdix"
-  template_hash = "f0fb97238a59"
-  last_run      = "2026-06-30T13:10:02Z"
+  template      = ".mdix/project_structure/project_structure.mdix"
+  template_hash = "a9bd48e94d0b"
+  last_run      = "2026-07-12T17:04:30Z"
   new_this_run  = 5
   overridden    = 0
-  skipped       = 2
+  skipped       = 54
   deleted       = 0
   renamed       = 0
   moved         = 0
   updated       = 0
 
   created_files::
-    "crates/midn-ecs/src/components.rs"
-    "crates/midn-ecs/src/lib.rs"
-    "crates/midn-ecs/src/registry.rs"
-    "crates/midn-ecs/src/systems.rs"
-    "crates/midn-ecs/src/world.rs"
+    "crates/midn-core/src/ecs/components.rs"
+    "crates/midn-core/src/ecs/mod.rs"
+    "crates/midn-core/src/ecs/registry.rs"
+    "crates/midn-core/src/ecs/systems.rs"
+    "crates/midn-core/src/ecs/world.rs"
 )
