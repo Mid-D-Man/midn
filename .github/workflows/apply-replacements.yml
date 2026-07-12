@@ -1,0 +1,48 @@
+name: Apply Replacements
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview changes without writing'
+        required: false
+        type: choice
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
+      file_strategy:
+        description: 'How to handle files that already exist at the resolved target'
+        required: false
+        type: choice
+        default: 'overwrite'
+        options:
+          - 'overwrite'
+          - 'skip'
+          - 'backup'
+          - 'rename'
+      dump_json:
+        description: 'Dump the full untruncated structure JSON'
+        required: false
+        type: choice
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
+  push:
+    paths:
+      - '.mdix/replacements/**'
+
+permissions:
+  contents: write
+
+jobs:
+  replace:
+    uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
+    with:
+      template:      '.mdix/replacements/replacements.mdix'
+      # Forced 'true' on every push — only a manual dispatch, with the
+      # dropdown explicitly flipped, can make this actually write + commit.
+      dry_run:       ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'true' }}
+      file_strategy: ${{ inputs.file_strategy || 'overwrite' }}
+      dump_json:     ${{ inputs.dump_json || 'false' }}
