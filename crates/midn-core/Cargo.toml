@@ -17,4 +17,9 @@ hmac       = "0.12"   # Kasme KDF — crates/midn-core/src/kdf.rs
 sha2       = "0.10"   # Kasme KDF — crates/midn-core/src/kdf.rs
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio     = { version = "1", features = ["rt-multi-thread", "macros"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "core_bench"
+harness = false
