@@ -10,6 +10,20 @@ use crate::milenage::MilenageContext;
 /// Outputs: mac_a (8), mac_s (8), res (8), ck (16), ik (16), ak (6), ak_star (6)
 ///
 /// Returns 0 on success, -1 if any pointer is null.
+///
+/// # Safety
+///
+/// The caller must ensure that, for every non-null pointer among
+/// `ki_ptr`/`opc_ptr`/`rand_ptr`/`sqn_ptr`/`amf_ptr`/`mac_a_out`/
+/// `mac_s_out`/`res_out`/`ck_out`/`ik_out`/`ak_out`/`ak_star_out`:
+/// - it is valid for reads (input pointers) or writes (output pointers) of
+///   its documented length in bytes (16/16/16/6/2 in, 8/8/8/16/16/6/6 out),
+/// - it is properly aligned (trivially true for `u8`),
+/// - none of the input buffers overlap any of the output buffers, and
+/// - it remains valid for the duration of the call (no concurrent
+///   mutation from another thread).
+///
+/// Passing a null pointer for any parameter is safe and yields `-1`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_generate_vector(
     ki_ptr:      *const u8,
@@ -73,6 +87,16 @@ pub unsafe extern "C" fn midn_milenage_generate_vector(
 }
 
 /// Derive OPc = OP ⊕ E_K(OP).
+///
+/// # Safety
+///
+/// The caller must ensure that, for every non-null pointer among
+/// `ki_ptr`/`op_ptr`/`opc_out`: it is valid for reads (`ki_ptr`, `op_ptr`)
+/// or writes (`opc_out`) of 16 bytes, is properly aligned (trivially true
+/// for `u8`), does not overlap either of the other two buffers, and
+/// remains valid for the duration of the call.
+///
+/// Passing a null pointer for any parameter is safe and yields `-1`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_compute_opc(
     ki_ptr:  *const u8,
@@ -100,6 +124,15 @@ pub unsafe extern "C" fn midn_milenage_compute_opc(
 }
 
 /// Constant-time RES comparison. Returns 1 match, 0 mismatch, -1 null ptr.
+///
+/// # Safety
+///
+/// The caller must ensure that, for every non-null pointer among
+/// `expected_ptr`/`received_ptr`: it is valid for reads of 8 bytes, is
+/// properly aligned (trivially true for `u8`), and remains valid for the
+/// duration of the call.
+///
+/// Passing a null pointer for either parameter is safe and yields `-1`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn midn_milenage_verify_res(
     expected_ptr: *const u8,
