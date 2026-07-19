@@ -44,7 +44,7 @@ impl KeccakSponge {
     /// implicitly `STATE_BYTES - rate_bytes`.
     pub fn new(rate_bytes: usize) -> Self {
         assert!(
-            rate_bytes >= 1 && rate_bytes <= STATE_BYTES,
+            (1..=STATE_BYTES).contains(&rate_bytes),
             "rate_bytes must be in 1..={STATE_BYTES}, got {rate_bytes}"
         );
         Self {
@@ -128,7 +128,7 @@ fn pad10_star_1(input: &[u8], rate_bytes: usize) -> Vec<u8> {
         out.push(0x81);
     } else {
         out.push(0x01);
-        out.extend(std::iter::repeat(0u8).take(pad_len - 2));
+        out.extend(std::iter::repeat_n(0u8, pad_len - 2));
         out.push(0x80);
     }
     out
@@ -228,4 +228,4 @@ mod tests {
     fn zero_rate_panics() {
         let _ = KeccakSponge::new(0);
     }
-}
+        }
