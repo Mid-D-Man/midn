@@ -23,6 +23,9 @@ pub enum ProtoError {
     #[error("malformed NGAP message: {reason}")]
     MalformedNgap { reason: &'static str },
 
+    #[error("malformed NAS-5GS message: {reason}")]
+    MalformedNas5gs { reason: &'static str },
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 }
