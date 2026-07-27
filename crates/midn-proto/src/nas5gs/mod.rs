@@ -13,15 +13,18 @@
 //! ## Status
 //!
 //! `messages`  — message shapes.
-//! `codec`     — wire encode/decode. Plain PDUs only.
+//! `codec`     — wire encode/decode. Plain PDUs, plus a security-protected
+//!               envelope (`encode_protected`/`decode_protected`) now that
+//!               `security` below is real.
 //! `security`  — 5G NAS ciphering/integrity. Reuses `nas::security`'s
 //!               EEA2/EIA2 primitives directly (5G's 128-5G-EA2/128-5G-IA2
 //!               are the same algorithms, TS 33.501 §5.11 explicitly
-//!               reuses the TS 33.401 cipher/integrity set) — only the
-//!               KAMF → NAS-key KDF (TS 33.501 Annex A.8) is NOT
-//!               implemented, `#[ignore]`-stubbed pending real spec text,
-//!               same never-fabricate policy as `midn-auth`'s TUAK stub
-//!               and `midn-core`'s Kasme KDF was built against.
+//!               reuses the TS 33.401 cipher/integrity set). The KAMF →
+//!               NAS-key KDF (TS 33.501 Annex A.8) is now IMPLEMENTED —
+//!               confirmed against directly-quoted spec text, see that
+//!               module's doc for the confidence note. KAMF itself still
+//!               has to come from somewhere upstream — that chain
+//!               (KAUSF → KSEAF → KAMF) lives in `midn_core::kdf`.
 
 pub mod codec;
 pub mod messages;
@@ -29,6 +32,7 @@ pub mod security;
 
 pub use codec::{
     decode_nas5gs,
+    decode_protected,
     encode_auth_reject,
     encode_auth_request,
     encode_auth_response,
@@ -38,6 +42,7 @@ pub use codec::{
     encode_identity_response_guti,
     encode_identity_response_pei,
     encode_identity_response_suci,
+    encode_protected,
     encode_registration_accept,
     encode_registration_complete,
     encode_registration_reject,
@@ -51,6 +56,9 @@ pub use codec::{
     DecodedRegistrationRequest,
     DecodedSecurityModeCommand,
     Nas5gsPdu,
+    IDTYPE_5G_GUTI,
+    IDTYPE_PEI,
+    IDTYPE_SUCI,
     MT_AUTHENTICATION_REJECT,
     MT_AUTHENTICATION_REQUEST,
     MT_AUTHENTICATION_RESPONSE,
@@ -65,9 +73,14 @@ pub use codec::{
     MT_SECURITY_MODE_COMMAND,
     MT_SECURITY_MODE_COMPLETE,
     NAS5GS_MM_EPD,
+    NAS5GS_SHT_INTEGRITY,
+    NAS5GS_SHT_INTEGRITY_CIPHERED,
+    NAS5GS_SHT_INTEGRITY_CIPHERED_NEW_CTX,
+    NAS5GS_SHT_INTEGRITY_NEW_CTX,
+    NAS5GS_SHT_PLAIN,
 };
 pub use messages::{
     AuthenticationRequest, AuthenticationResponse, IdentityResponse, Nas5gsMessage,
     RegistrationAccept, RegistrationRequest, SecurityModeCommand, Suci,
 };
-pub use security::{Nas5gsSecurityContext, ProtectedNas5gs};
+pub use security::{derive_nas_keys, Nas5gsSecurityContext, ProtectedNas5gs};

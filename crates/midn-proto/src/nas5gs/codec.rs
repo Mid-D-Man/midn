@@ -33,8 +33,9 @@
 //! Octets 4+   : IEs
 //! ```
 //!
-//! Security-protected envelope (needs `nas5gs::security`, NOT implemented
-//! by this increment):
+//! Security-protected envelope — implemented below via `encode_protected`/
+//! `decode_protected`, now that `nas5gs::security::Nas5gsSecurityContext`
+//! exists:
 //! ```text
 //! Octet 1     : Extended Protocol Discriminator (0x7E)
 //! Octet 2     : [spare] | [security header type, nonzero]
@@ -42,10 +43,15 @@
 //! Octet 7     : NAS sequence number
 //! Octets 8+   : inner plain 5GS NAS message (as above)
 //! ```
+//! One byte longer than NAS-EPS's equivalent 6-byte outer header — same
+//! EPD-gets-its-own-octet reason as the plain-PDU header above. No
+//! trailing "message type" octet in the OUTER header — that only appears
+//! once, inside the inner plain message after decryption.
 //!
-//! `decode_nas5gs` rejects anything with a nonzero security header type —
-//! same "protected NAS not supported yet" stance `nas::codec` took before
-//! `encode_protected`/`decode_protected` existed.
+//! `decode_nas5gs` still rejects anything with a nonzero security header
+//! type — it only handles plain PDUs. Callers auto-detect a protected
+//! envelope by security header type and route to `decode_protected`
+//! instead, same pattern `nas::codec` uses.
 //!
 //! ## Message type octet values — confidence
 //!
@@ -89,6 +95,7 @@ use bytes::Bytes;
 use crate::error::{ProtoError, Result};
 use crate::nas::ie::{read_lv, write_lv};
 use crate::nas5gs::messages::Suci;
+use crate::nas5gs::security::Nas5gsSecurityContext;
 
 // ── header constants ─────────────────────────────────────────────────────────
 
@@ -122,11 +129,14 @@ pub const MT_IDENTITY_RESPONSE: u8 = 0x5C;
 pub const MT_SECURITY_MODE_COMMAND: u8 = 0x5D;
 pub const MT_SECURITY_MODE_COMPLETE: u8 = 0x5E;
 
-// Mobile Identity "type of identity" values (TS 24.501 Table 9.11.3.4.1) —
-// confirmed for SUCI/5G-GUTI against capture decode (see module doc).
-const IDTYPE_SUCI: u8 = 1;
-const IDTYPE_5G_GUTI: u8 = 2;
-const IDTYPE_PEI: u8 = 3; // catch-all for IMEI/IMEISV — see module doc
+/// Mobile Identity "type of identity" values (TS 24.501 Table 9.11.3.4.1) —
+/// confirmed for SUCI/5G-GUTI against capture decode (see module doc). Made
+/// `pub`, not just crate-internal — callers building an `IdentityRequest`
+/// (e.g. `amf::registration`) need to reference these symbolically instead
+/// of hardcoding magic numbers.
+pub const IDTYPE_SUCI: u8 = 1;
+pub const IDTYPE_5G_GUTI: u8 = 2;
+pub const IDTYPE_PEI: u8 = 3; // catch-all for IMEI/IMEISV — see module doc
 
 // ── top-level decode ──────────────────────────────────────────────────────────
 
@@ -591,6 +601,45 @@ pub fn encode_deregistration_accept() -> Bytes {
     Bytes::from(header(MT_DEREGISTRATION_ACCEPT))
 }
 
+// ── Security-protected envelope ───────────────────────────────────────────────
+
+/// Wrap an already-built plain 5GS NAS message in a protected envelope
+/// (AMF → UE direction — uses `Nas5gsSecurityContext::protect_downlink`).
+///
+/// `sht` should normally be [`NAS5GS_SHT_INTEGRITY_CIPHERED`]; use one of
+/// the `*_NEW_CTX` variants for the first protected message sent
+/// immediately after a new security context is established (mirrors TS
+/// 24.301 §4.4.3's convention, which TS 24.501 §4.4.5 reuses).
+pub fn encode_protected(ctx: &mut Nas5gsSecurityContext, sht: u8, inner_plain: &[u8]) -> Bytes {
+    let protected = ctx.protect_downlink(inner_plain);
+    let mut buf = Vec::with_capacity(7 + protected.payload.len());
+    buf.push(NAS5GS_MM_EPD);
+    buf.push(sht & 0x0F); // spare high nibble = 0
+    buf.extend_from_slice(&protected.mac_i);
+    buf.push((protected.count & 0xFF) as u8);
+    buf.extend_from_slice(&protected.payload);
+    Bytes::from(buf)
+}
+
+/// Unwrap a protected 5GS NAS envelope (UE → AMF direction — uses
+/// `Nas5gsSecurityContext::unprotect_uplink`).
+///
+/// Returns the inner plain NAS bytes on success — feed those to
+/// [`decode_nas5gs`] to get the actual `Nas5gsPdu`. Returns `None` on
+/// integrity failure or a malformed/too-short buffer; never panics on
+/// attacker input.
+pub fn decode_protected(ctx: &mut Nas5gsSecurityContext, buf: &[u8]) -> Option<Vec<u8>> {
+    if buf.len() < 7 { return None; }
+    if buf[0] != NAS5GS_MM_EPD { return None; }
+    let sht = buf[1] & 0x0F;
+    if sht == NAS5GS_SHT_PLAIN { return None; } // plain — caller should use decode_nas5gs directly
+    let mut mac_i = [0u8; 4];
+    mac_i.copy_from_slice(&buf[2..6]);
+    let seq_byte = buf[6];
+    let ciphertext = &buf[7..];
+    ctx.unprotect_uplink(seq_byte, mac_i, ciphertext)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -816,5 +865,69 @@ mod tests {
     #[test]
     fn decode_rejects_too_short() {
         assert!(decode_nas5gs(&[NAS5GS_MM_EPD, 0]).is_err());
+    }
+
+    // ── Protected envelope ──────────────────────────────────────────────────
+
+    fn test_ctx() -> Nas5gsSecurityContext {
+        Nas5gsSecurityContext::new_from_keys([0x2Bu8; 16], [0x2Bu8; 16], 2, 2)
+    }
+
+    #[test]
+    fn protected_envelope_round_trip() {
+        let mut amf_ctx = test_ctx();
+        let mut ue_ctx = test_ctx();
+
+        let plain = encode_registration_accept(1, &[0xABu8; 11], &[]);
+        let envelope = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, &plain);
+
+        assert_eq!(envelope[0], NAS5GS_MM_EPD);
+        assert_eq!(envelope[1] & 0x0F, NAS5GS_SHT_INTEGRITY_CIPHERED);
+
+        let recovered = decode_protected(&mut ue_ctx, &envelope).expect("valid MAC should verify");
+        assert_eq!(recovered, plain.to_vec());
+
+        match decode_nas5gs(&recovered) {
+            Ok(Nas5gsPdu::RegistrationAccept(d)) => assert_eq!(d.registration_result, 1),
+            other => panic!("wrong decoded variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protected_envelope_advances_counts_independently_per_direction() {
+        let mut amf_ctx = test_ctx();
+        let mut ue_ctx = test_ctx();
+
+        let first = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, b"one");
+        let second = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, b"two");
+        assert_ne!(first, second, "COUNT must advance between messages");
+
+        assert!(decode_protected(&mut ue_ctx, &first).is_some());
+        assert!(decode_protected(&mut ue_ctx, &second).is_some());
+    }
+
+    #[test]
+    fn decode_protected_rejects_tampered_envelope() {
+        let mut amf_ctx = test_ctx();
+        let mut ue_ctx = test_ctx();
+
+        let mut envelope = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, b"hello").to_vec();
+        let last = envelope.len() - 1;
+        envelope[last] ^= 0xFF; // flip a ciphertext bit
+
+        assert!(decode_protected(&mut ue_ctx, &envelope).is_none());
+    }
+
+    #[test]
+    fn decode_protected_rejects_plain_sht() {
+        let mut ctx = test_ctx();
+        let plain = encode_registration_complete();
+        assert!(decode_protected(&mut ctx, &plain).is_none(), "plain SHT must route to decode_nas5gs, not decode_protected");
+    }
+
+    #[test]
+    fn decode_protected_rejects_too_short() {
+        let mut ctx = test_ctx();
+        assert!(decode_protected(&mut ctx, &[NAS5GS_MM_EPD, NAS5GS_SHT_INTEGRITY_CIPHERED]).is_none());
     }
   }

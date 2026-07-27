@@ -12,6 +12,9 @@ pub mod registry;
 pub mod systems;
 pub mod world;
 
-pub use components::{AuthFailReason, AuthState, IdentityComponent, SecurityContext, TunnelComponent};
+pub use components::{
+    AuthFailReason, AuthState, IdentityComponent, Nas5gsAkaContext, SecurityContext,
+    TunnelComponent,
+};
 pub use registry::ImsiRegistry;
 pub use world::{EntityId, World};

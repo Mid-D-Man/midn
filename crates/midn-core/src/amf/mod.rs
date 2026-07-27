@@ -6,13 +6,18 @@
 //! Key differences from MME:
 //!   - Registration replaces Attach (more lightweight)
 //!   - PDU Sessions replace EPS Bearers (more flexible QoS)
-//!   - AUSF/UDM replace HSS (separated auth and subscriber data)
+//!   - AUSF/UDM replace HSS (separated in real 5G; collapsed into one `Hss`
+//!     here — see `registration` module doc's "AUSF/UDM simplification")
 //!   - SMF handles session management (split from AMF)
 //!
-//! ## Phase 3 target
+//! ## Status
 //!
-//! Implement 5G Registration and PDU Session Establishment after
-//! the LTE MME attach procedure is complete and tested.
+//! `registration` — 5G Registration procedure, Phase A: full flow through
+//! RegistrationComplete, real 5G-AKA (Milenage via `Hss` + the TS 33.501
+//! Annex A KAUSF/KSEAF/KAMF chain in `midn_core::kdf`), real NAS security
+//! activation. No PDU Session Establishment, no TEID/UPF interaction, no
+//! `InitialContextSetupRequest` — see `registration` module doc's
+//! "Phase A vs Phase B" for exactly why and what Phase B adds.
 
 pub mod registration;
 pub mod state_machine;

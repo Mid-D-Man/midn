@@ -9,20 +9,23 @@
 //! than reimplementing them — there is nothing 5G-specific about the
 //! cipher/MAC primitives themselves.
 //!
-//! What IS 5G-specific, and NOT implemented here: the KAMF → NAS-key KDF
-//! (TS 33.501 Annex A.8). This is presumably structurally similar to TS
-//! 33.401 Annex A.7 (the LTE Kasme → NAS-key KDF `nas::security` already
-//! implements in `kdf_nas_key`) but the exact FC byte value and S-string
-//! construction are NOT confirmed against spec text, so per this project's
-//! standing policy (see `midn-auth`'s TUAK stub, `midn-core`'s original
-//! Kasme placeholder) this is `#[ignore]`-stubbed rather than guessed. See
-//! `derive_5g_nas_keys` below.
+//! ## Update: the KAMF → NAS-key KDF is now implemented
 //!
-//! `Nas5gsSecurityContext` therefore takes already-derived
-//! `k_nas_enc`/`k_nas_int` directly (`new_from_keys`) rather than deriving
-//! them from KAMF internally the way `nas::security::NasSecurityContext::new`
-//! derives from Kasme — swap in `derive_5g_nas_keys`'s real output once
-//! that KDF exists, no other change needed here.
+//! Previously stubbed pending spec text. That text (TS 33.501 Annex A.8,
+//! "Algorithm key derivation functions") turned out to be directly
+//! quotable and matches TS 33.401 Annex A.7's construction almost exactly
+//! — same P0 = algorithm type distinguisher / P1 = algorithm identity
+//! shape `nas::security::kdf_nas_key` already implements for LTE, just a
+//! different FC (0x69 vs LTE's 0x15) and distinguisher values (0x01 =
+//! N-NAS-enc-alg, 0x02 = N-NAS-int-alg — TS 33.501 Table A.8-1). HIGH
+//! confidence: confirmed against directly-quoted spec text, independently
+//! corroborated by a second public source. See `derive_nas_keys` below.
+//!
+//! What's still genuinely unimplemented, upstream of this file: KAMF
+//! itself has to come from somewhere. That chain (KAUSF → KSEAF → KAMF,
+//! TS 33.501 Annex A.2/A.6/A.7) now lives in `midn_core::kdf`, alongside
+//! the LTE Kasme derivation it sits next to — see that module's doc for
+//! the full confidence breakdown on each step.
 //!
 //! ## Algorithm representation
 //!
@@ -48,8 +51,7 @@ pub struct ProtectedNas5gs {
 }
 
 /// Per-subscriber 5GS NAS security state. Structurally identical to
-/// `nas::security::NasSecurityContext` — see module doc for why key
-/// derivation is NOT wired the same way (KAMF KDF stubbed, not real yet).
+/// `nas::security::NasSecurityContext`.
 #[derive(Clone, Zeroize, ZeroizeOnDrop)]
 pub struct Nas5gsSecurityContext {
     pub k_nas_enc: [u8; 16],
@@ -67,12 +69,16 @@ pub struct Nas5gsSecurityContext {
 }
 
 impl Nas5gsSecurityContext {
-    /// Build a context directly from already-derived NAS keys. Use this
-    /// until `derive_5g_nas_keys` is real; once it is, add a
-    /// `Nas5gsSecurityContext::new(kamf, cipher_alg, integrity_alg)` that
-    /// calls it internally — same shape as
+    /// Build a context by deriving NAS session keys from KAMF — mirrors
     /// `nas::security::NasSecurityContext::new`'s relationship to
-    /// `derive_nas_keys`.
+    /// `derive_nas_keys` exactly, one level up the key hierarchy.
+    pub fn new(kamf: &[u8; 32], nas_cipher_alg: u8, nas_integrity_alg: u8) -> Self {
+        let (k_nas_enc, k_nas_int) = derive_nas_keys(kamf, nas_cipher_alg, nas_integrity_alg);
+        Self { k_nas_enc, k_nas_int, nas_cipher_alg, nas_integrity_alg, dl_count: 0, ul_count: 0 }
+    }
+
+    /// Build a context directly from already-derived NAS keys — useful for
+    /// tests that want fixed keys without running the full KDF chain.
     pub fn new_from_keys(
         k_nas_enc: [u8; 16],
         k_nas_int: [u8; 16],
@@ -160,24 +166,57 @@ impl core::fmt::Debug for Nas5gsSecurityContext {
     }
 }
 
-// ── KAMF → NAS-key KDF (TS 33.501 Annex A.8) — NOT IMPLEMENTED ──────────────
+// ── KAMF → NAS-key KDF (TS 33.501 Annex A.8) ────────────────────────────────
+
+type HmacSha256 = hmac::Hmac<sha2::Sha256>;
+
+/// FC = 0x69 (TS 33.501 Annex A.8) — different number from LTE's FC = 0x15
+/// (TS 33.401 Annex A.7, `nas::security::FC_NAS_ALGO_KEY_DERIVATION`) even
+/// though the construction shape is identical. Different specs, adjacent
+/// but independently assigned FC number spaces — confirmed, not assumed.
+const FC_5G_ALGO_KEY_DERIVATION: u8 = 0x69;
+/// TS 33.501 Table A.8-1.
+const ALGO_DISTINGUISHER_NAS_ENC: u8 = 0x01;
+const ALGO_DISTINGUISHER_NAS_INT: u8 = 0x02;
+
+/// KDF(KAMF, S) → 256 bits; the derived 128-bit NAS key is the 128 LEAST
+/// significant bits of that output — TS 33.501 Annex A.8, same truncation
+/// convention as its LTE counterpart `nas::security::kdf_nas_key`.
+///
+/// `S = FC ‖ P0 ‖ L0 ‖ P1 ‖ L1`:
+///   FC = 0x69 (algorithm key derivation)
+///   P0 = algorithm type distinguisher (0x01 enc / 0x02 int), L0 = 0x0001
+///   P1 = algorithm identity (e.g. 2 for *EA2/*IA2),           L1 = 0x0001
+fn kdf_5g_nas_key(kamf: &[u8; 32], algorithm_distinguisher: u8, algorithm_identity: u8) -> [u8; 16] {
+    use hmac::Mac;
+
+    let mut s = Vec::with_capacity(7);
+    s.push(FC_5G_ALGO_KEY_DERIVATION);
+    s.push(algorithm_distinguisher);
+    s.extend_from_slice(&1u16.to_be_bytes()); // L0 = len(P0) = 1 byte
+    s.push(algorithm_identity);
+    s.extend_from_slice(&1u16.to_be_bytes()); // L1 = len(P1) = 1 byte
+
+    let mut mac = HmacSha256::new_from_slice(kamf)
+        .expect("HMAC-SHA-256 accepts a 32-byte key");
+    mac.update(&s);
+    let out = mac.finalize().into_bytes(); // 32 bytes
+
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&out[16..32]); // least-significant 128 bits
+    key
+}
 
 /// Derive `(k_nas_enc, k_nas_int)` from KAMF for the negotiated 5G NAS
-/// algorithm pair — TS 33.501 Annex A.8.
+/// algorithm pair — TS 33.501 Annex A.8. Algorithm IDs are raw `u8` (see
+/// module doc) — `nas_cipher_alg`/`nas_integrity_alg` straight off
+/// `SecurityModeCommand`, no enum conversion needed.
 ///
-/// STUBBED. The FC byte value and exact S-string construction for this KDF
-/// are not confirmed against spec text — this project's standing policy is
-/// to never hand-type 3GPP cryptographic constants from memory. Fill this
-/// in against TS 33.501 Annex A.8 directly, then wire a
-/// `Nas5gsSecurityContext::new(kamf, cipher_alg, integrity_alg)` that calls
-/// it — mirroring `nas::security::NasSecurityContext::new`'s relationship
-/// to `derive_nas_keys` exactly. Also note: deriving KAMF itself (TS 33.501
-/// Annex A.7, from Kseaf) is a SEPARATE unimplemented step upstream of this
-/// one — see `how_far_from_full_software_simulation` item 2 in the project
-/// handover (AMF registration procedure) for where that fits.
-#[allow(dead_code)]
-fn derive_5g_nas_keys(_kamf: &[u8; 32], _cipher_alg: u8, _integrity_alg: u8) -> ([u8; 16], [u8; 16]) {
-    todo!("TS 33.501 Annex A.8 KAMF -> NAS-key KDF — needs real spec text, see module doc")
+/// Confidence: HIGH — see module doc.
+pub fn derive_nas_keys(kamf: &[u8; 32], nas_cipher_alg: u8, nas_integrity_alg: u8) -> ([u8; 16], [u8; 16]) {
+    let k_nas_enc = kdf_5g_nas_key(kamf, ALGO_DISTINGUISHER_NAS_ENC, nas_cipher_alg);
+    let k_nas_int = kdf_5g_nas_key(kamf, ALGO_DISTINGUISHER_NAS_INT, nas_integrity_alg);
+    (k_nas_enc, k_nas_int)
 }
 
 #[cfg(test)]
@@ -245,13 +284,51 @@ mod tests {
         assert_eq!(protected.mac_i, [0u8; 4], "null integrity must produce a zero MAC-I");
     }
 
+    // ── derive_nas_keys (TS 33.501 Annex A.8) ──────────────────────────────
+
     #[test]
-    #[ignore = "TS 33.501 Annex A.8 KAMF -> NAS-key KDF not implemented — see derive_5g_nas_keys"]
+    fn derive_nas_keys_is_deterministic() {
+        let kamf = [0x77u8; 32];
+        assert_eq!(derive_nas_keys(&kamf, 2, 2), derive_nas_keys(&kamf, 2, 2));
+    }
+
+    #[test]
+    fn derive_nas_keys_enc_and_int_differ() {
+        let kamf = [0x77u8; 32];
+        let (enc, int) = derive_nas_keys(&kamf, 2, 2);
+        assert_ne!(enc, int, "enc/int distinguisher must produce different keys even with the same algorithm identity");
+    }
+
+    #[test]
+    fn derive_nas_keys_changes_with_kamf() {
+        let (a, _) = derive_nas_keys(&[0x77; 32], 2, 2);
+        let (b, _) = derive_nas_keys(&[0x78; 32], 2, 2);
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_nas_keys_changes_with_algorithm_id() {
+        let kamf = [0x77u8; 32];
+        let (a, _) = derive_nas_keys(&kamf, 1, 2);
+        let (b, _) = derive_nas_keys(&kamf, 2, 2);
+        assert_ne!(a, b, "different negotiated algorithm must produce a different session key");
+    }
+
+    #[test]
+    fn new_derives_same_keys_new_from_keys_would_need_precomputed() {
+        let kamf = [0x77u8; 32];
+        let (enc, int) = derive_nas_keys(&kamf, 2, 2);
+        let via_new = Nas5gsSecurityContext::new(&kamf, 2, 2);
+        let via_from_keys = Nas5gsSecurityContext::new_from_keys(enc, int, 2, 2);
+        assert_eq!(via_new.k_nas_enc, via_from_keys.k_nas_enc);
+        assert_eq!(via_new.k_nas_int, via_from_keys.k_nas_int);
+    }
+
+    #[test]
+    #[ignore = "TS 33.501 Annex A.8 official test vectors not yet sourced — \
+                fill in real (KAMF, algorithm distinguisher, algorithm identity) -> \
+                key values from spec Annex A.8 or a known-good reference implementation"]
     fn kamf_kdf_official_test_vectors() {
-        // Pull real KAMF/algorithm-pair/expected-key values from TS 33.501
-        // Annex A.8 (or an official test set) and assert against them here,
-        // same pattern as nas::security's own official_3gpp_test_vectors
-        // stub and midn-auth::milenage's test_set_4..6.
         todo!()
     }
-  }
+}

@@ -19,6 +19,7 @@ sha2       = "0.10"   # Kasme KDF — crates/midn-core/src/kdf.rs
 [dev-dependencies]
 tokio     = { version = "1", features = ["rt-multi-thread", "macros"] }
 criterion = { version = "0.5", features = ["html_reports"] }
+bytes     = "1.5"   # amf::state_machine tests reference bytes::Bytes directly
 
 [[bench]]
 name    = "core_bench"
