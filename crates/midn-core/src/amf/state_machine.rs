@@ -114,7 +114,16 @@ mod tests {
     use midn_proto::nas5gs::{encode_identity_response_suci, encode_registration_request, Suci};
     use midn_proto::ngap::messages::NgapInitialUeMessage;
 
-    const TEST_IMSI: u64 = 901_700_000_000_001;
+    // Must round-trip through `registration::resolve_suci_to_imsi`'s 5-byte
+    // MSIN-as-IMSI scheme (< 2^40 ≈ 1.0995e12 — see that function's doc).
+    // The original 15-digit value here (901_700_000_000_001) silently
+    // truncated on resolve (901700000000001 -> 100465223681), so the AMF
+    // looked up a different subscriber than `Hss` was provisioned under and
+    // dropped the IdentityResponse as unknown — the actual root cause of
+    // this test's CI failure, not the protected-envelope direction bug
+    // below (that one's real too, but this test never got far enough to
+    // hit it). Trimmed to 12 digits, which fits.
+    const TEST_IMSI: u64 = 901_700_000_001;
     const TEST_K: &str = "465b5ce8b199b49faa5f0a2ee238a6bc";
     const TEST_OPC: &str = "cd63cb71954a9f4e48a5994e37a02baf";
     const TEST_PLMN: [u8; 3] = [0x00, 0x11, 0x22];
@@ -258,7 +267,14 @@ mod tests {
         let kamf = crate::kdf::derive_kamf(&kseaf, &supi, &[0x00, 0x00]);
         let mut mock_ue_nas_ctx = midn_proto::nas5gs::Nas5gsSecurityContext::new(&kamf, 2, 2);
 
-        let accept_plain = midn_proto::nas5gs::decode_protected(&mut mock_ue_nas_ctx, &accept_envelope)
+        // AMF sent this via encode_protected (protect_downlink,
+        // Direction::Downlink) — the mock UE must open it with the
+        // DIRECTION-matched decode_protected_downlink (unprotect_downlink),
+        // not decode_protected (unprotect_uplink). Using decode_protected
+        // here was the protected-envelope half of this test's CI failure —
+        // see nas5gs::codec::decode_protected_downlink's doc for why the
+        // AMF-role pair can't be reused for the UE role.
+        let accept_plain = midn_proto::nas5gs::decode_protected_downlink(&mut mock_ue_nas_ctx, &accept_envelope)
             .expect("mock UE must be able to decrypt+verify what the AMF sent");
         match decode_nas5gs(&accept_plain) {
             Ok(Nas5gsPdu::RegistrationAccept(d)) => assert_eq!(d.registration_result, 1),

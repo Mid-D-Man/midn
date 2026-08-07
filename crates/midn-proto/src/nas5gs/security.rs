@@ -95,7 +95,8 @@ impl Nas5gsSecurityContext {
     fn integrity_is_null(&self) -> bool { self.nas_integrity_alg == 0 }
 
     /// Protect an outbound (AMF → UE) message. Consumes and advances the
-    /// downlink COUNT.
+    /// downlink COUNT. Network-role method — see module doc / `codec::
+    /// encode_protected` for the AMF-side usage this backs.
     pub fn protect_downlink(&mut self, plain: &[u8]) -> ProtectedNas5gs {
         let count = self.dl_count;
         self.dl_count = self.dl_count.wrapping_add(1);
@@ -105,7 +106,8 @@ impl Nas5gsSecurityContext {
     /// Verify and decrypt an inbound (UE → AMF) message. Same reconstructed-
     /// COUNT / monotonic-advance approach as `nas::security`'s LTE
     /// equivalent — see that module's doc for the exact tradeoff versus the
-    /// full TS 24.501 replay window.
+    /// full TS 24.501 replay window. Network-role method — see `codec::
+    /// decode_protected` for the AMF-side usage this backs.
     pub fn unprotect_uplink(
         &mut self,
         seq_byte: u8,
@@ -115,6 +117,41 @@ impl Nas5gsSecurityContext {
         let count = reconstruct_count(self.ul_count, seq_byte);
         let plain = self.unprotect(count, Direction::Uplink, mac_i, ciphertext)?;
         self.ul_count = count.wrapping_add(1);
+        Some(plain)
+    }
+
+    /// Protect an outbound (UE → AMF) message. Consumes and advances the
+    /// uplink COUNT. UE-role mirror of `protect_downlink` — the DIRECTION
+    /// bit that feeds `eea2_apply`/`eia2_compute_mac` is a property of which
+    /// way a given message travels, not of which side is doing the
+    /// encrypting, so a genuine UE-role caller (today: mock-UE test code;
+    /// eventually: the simulator binary on the project roadmap) needs its
+    /// own uplink-tagged protect, not a relabeled `protect_downlink`. See
+    /// `codec::encode_protected_uplink`.
+    pub fn protect_uplink(&mut self, plain: &[u8]) -> ProtectedNas5gs {
+        let count = self.ul_count;
+        self.ul_count = self.ul_count.wrapping_add(1);
+        self.protect(count, Direction::Uplink, plain)
+    }
+
+    /// Verify and decrypt an inbound (AMF → UE) message. UE-role mirror of
+    /// `unprotect_uplink` — reconstructs COUNT off `dl_count` and verifies
+    /// with `Direction::Downlink`, matching what the network side used in
+    /// `protect_downlink` for the same message. Using `unprotect_uplink`
+    /// here instead (same COUNT baseline, wrong DIRECTION) would compute a
+    /// different keystream/MAC than the sender did and always fail — that
+    /// mismatch is exactly what motivated adding this method rather than
+    /// reusing `unprotect_uplink` for both roles. See `codec::
+    /// decode_protected_downlink`.
+    pub fn unprotect_downlink(
+        &mut self,
+        seq_byte: u8,
+        mac_i: [u8; 4],
+        ciphertext: &[u8],
+    ) -> Option<Vec<u8>> {
+        let count = reconstruct_count(self.dl_count, seq_byte);
+        let plain = self.unprotect(count, Direction::Downlink, mac_i, ciphertext)?;
+        self.dl_count = count.wrapping_add(1);
         Some(plain)
     }
 
@@ -272,6 +309,52 @@ mod tests {
         let bad_mac = [0xFFu8; 4];
         assert!(ctx.unprotect_uplink(0, bad_mac, &ciphertext).is_none());
         assert_eq!(ctx.ul_count(), 0, "ul_count must NOT advance on a rejected message");
+    }
+
+    #[test]
+    fn network_downlink_is_opened_by_ue_role_unprotect_downlink() {
+        // The actual bug this pair of methods fixes: a message the network
+        // protects via `protect_downlink` must be opened via
+        // `unprotect_downlink` (same DIRECTION), not `unprotect_uplink`
+        // (same COUNT baseline shape, wrong DIRECTION — silently fails).
+        let mut amf_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let mut ue_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let plain = b"RegistrationAccept, network to UE".to_vec();
+
+        let protected = amf_ctx.protect_downlink(&plain);
+        let recovered = ue_ctx
+            .unprotect_downlink(protected.count as u8, protected.mac_i, &protected.payload)
+            .expect("UE-role unprotect_downlink must open what the network protected downlink");
+        assert_eq!(recovered, plain);
+    }
+
+    #[test]
+    fn network_downlink_is_not_opened_by_wrong_direction() {
+        // Same scenario as above, but deliberately using the wrong-role
+        // method to document why it must fail (guards against ever
+        // "fixing" `unprotect_uplink` back into double duty).
+        let mut amf_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let mut ue_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let plain = b"RegistrationAccept, network to UE".to_vec();
+
+        let protected = amf_ctx.protect_downlink(&plain);
+        assert!(
+            ue_ctx.unprotect_uplink(protected.count as u8, protected.mac_i, &protected.payload).is_none(),
+            "wrong DIRECTION must not verify, even with matching keys and COUNT"
+        );
+    }
+
+    #[test]
+    fn ue_uplink_is_opened_by_network_role_unprotect_uplink() {
+        let mut ue_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let mut amf_ctx = Nas5gsSecurityContext::new_from_keys(k(), k(), 2, 2);
+        let plain = b"AuthenticationResponse, UE to network".to_vec();
+
+        let protected = ue_ctx.protect_uplink(&plain);
+        let recovered = amf_ctx
+            .unprotect_uplink(protected.count as u8, protected.mac_i, &protected.payload)
+            .expect("network-role unprotect_uplink must open what the UE protected uplink");
+        assert_eq!(recovered, plain);
     }
 
     #[test]

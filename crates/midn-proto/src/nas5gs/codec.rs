@@ -53,6 +53,14 @@
 //! envelope by security header type and route to `decode_protected`
 //! instead, same pattern `nas::codec` uses.
 //!
+//! `encode_protected`/`decode_protected` are AMF-role only (protect
+//! downlink / unprotect uplink) — that's the only role `amf::state_machine`
+//! ever needs. A UE-role caller (mock-UE test code today; the simulator
+//! binary on the project roadmap eventually) needs the DIRECTION-matched
+//! opposite pair, `encode_protected_uplink`/`decode_protected_downlink` —
+//! see those functions' docs for the exact bug reusing the AMF-role pair
+//! for both roles causes.
+//!
 //! ## Message type octet values — confidence
 //!
 //! `MT_REGISTRATION_REQUEST` (0x41) and `MT_REGISTRATION_ACCEPT` (0x42) are
@@ -640,6 +648,46 @@ pub fn decode_protected(ctx: &mut Nas5gsSecurityContext, buf: &[u8]) -> Option<V
     ctx.unprotect_uplink(seq_byte, mac_i, ciphertext)
 }
 
+/// Wrap an already-built plain 5GS NAS message in a protected envelope
+/// (UE → AMF direction — uses `Nas5gsSecurityContext::protect_uplink`).
+/// UE-role mirror of `encode_protected`, for callers simulating the UE side
+/// (today: mock-UE test code; eventually the simulator binary on the
+/// project roadmap) rather than the AMF.
+pub fn encode_protected_uplink(ctx: &mut Nas5gsSecurityContext, sht: u8, inner_plain: &[u8]) -> Bytes {
+    let protected = ctx.protect_uplink(inner_plain);
+    let mut buf = Vec::with_capacity(7 + protected.payload.len());
+    buf.push(NAS5GS_MM_EPD);
+    buf.push(sht & 0x0F);
+    buf.extend_from_slice(&protected.mac_i);
+    buf.push((protected.count & 0xFF) as u8);
+    buf.extend_from_slice(&protected.payload);
+    Bytes::from(buf)
+}
+
+/// Unwrap a protected 5GS NAS envelope (AMF → UE direction — uses
+/// `Nas5gsSecurityContext::unprotect_downlink`). UE-role mirror of
+/// `decode_protected`, for callers simulating the UE side.
+///
+/// Root cause this exists to fix: `decode_protected` is hardwired to
+/// `unprotect_uplink` (`Direction::Uplink`) because its only production
+/// caller (`amf::state_machine::handle_uplink_nas`) is always the AMF
+/// receiving from a UE. A UE-role caller opening a message the AMF sent via
+/// `encode_protected` (`protect_downlink`, `Direction::Downlink`) needs a
+/// DIRECTION-matched decode instead — calling `decode_protected` there
+/// would use the wrong DIRECTION and always fail MAC verification, keys and
+/// COUNT notwithstanding.
+pub fn decode_protected_downlink(ctx: &mut Nas5gsSecurityContext, buf: &[u8]) -> Option<Vec<u8>> {
+    if buf.len() < 7 { return None; }
+    if buf[0] != NAS5GS_MM_EPD { return None; }
+    let sht = buf[1] & 0x0F;
+    if sht == NAS5GS_SHT_PLAIN { return None; }
+    let mut mac_i = [0u8; 4];
+    mac_i.copy_from_slice(&buf[2..6]);
+    let seq_byte = buf[6];
+    let ciphertext = &buf[7..];
+    ctx.unprotect_downlink(seq_byte, mac_i, ciphertext)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -884,7 +932,11 @@ mod tests {
         assert_eq!(envelope[0], NAS5GS_MM_EPD);
         assert_eq!(envelope[1] & 0x0F, NAS5GS_SHT_INTEGRITY_CIPHERED);
 
-        let recovered = decode_protected(&mut ue_ctx, &envelope).expect("valid MAC should verify");
+        // encode_protected is AMF-role (protect_downlink) — the UE-role
+        // receiver must open it with decode_protected_downlink
+        // (unprotect_downlink), not decode_protected (unprotect_uplink,
+        // wrong DIRECTION for a downlink message). See that function's doc.
+        let recovered = decode_protected_downlink(&mut ue_ctx, &envelope).expect("valid MAC should verify");
         assert_eq!(recovered, plain.to_vec());
 
         match decode_nas5gs(&recovered) {
@@ -902,8 +954,8 @@ mod tests {
         let second = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, b"two");
         assert_ne!(first, second, "COUNT must advance between messages");
 
-        assert!(decode_protected(&mut ue_ctx, &first).is_some());
-        assert!(decode_protected(&mut ue_ctx, &second).is_some());
+        assert!(decode_protected_downlink(&mut ue_ctx, &first).is_some());
+        assert!(decode_protected_downlink(&mut ue_ctx, &second).is_some());
     }
 
     #[test]
@@ -915,6 +967,19 @@ mod tests {
         let last = envelope.len() - 1;
         envelope[last] ^= 0xFF; // flip a ciphertext bit
 
+        assert!(decode_protected_downlink(&mut ue_ctx, &envelope).is_none());
+    }
+
+    #[test]
+    fn decode_protected_wrong_direction_rejects_even_untampered_envelope() {
+        // Documents the exact failure mode this session's CI run hit:
+        // decode_protected (unprotect_uplink) opening an encode_protected
+        // (protect_downlink) envelope always fails on DIRECTION alone, with
+        // no tampering involved.
+        let mut amf_ctx = test_ctx();
+        let mut ue_ctx = test_ctx();
+
+        let envelope = encode_protected(&mut amf_ctx, NAS5GS_SHT_INTEGRITY_CIPHERED, b"hello");
         assert!(decode_protected(&mut ue_ctx, &envelope).is_none());
     }
 

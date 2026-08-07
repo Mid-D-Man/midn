@@ -33,6 +33,7 @@ pub mod security;
 pub use codec::{
     decode_nas5gs,
     decode_protected,
+    decode_protected_downlink,
     encode_auth_reject,
     encode_auth_request,
     encode_auth_response,
@@ -43,6 +44,7 @@ pub use codec::{
     encode_identity_response_pei,
     encode_identity_response_suci,
     encode_protected,
+    encode_protected_uplink,
     encode_registration_accept,
     encode_registration_complete,
     encode_registration_reject,

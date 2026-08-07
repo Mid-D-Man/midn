@@ -123,6 +123,15 @@ pub enum RegistrationError {
 /// carried but not folded in — this simulation's `Hss` is keyed on a flat
 /// `u64` with no enforced MCC/MNC/MSIN substructure, same as everywhere
 /// else IMSI appears in this codebase.
+///
+/// Real consequence, not just a theoretical one: this only round-trips for
+/// IMSI values < 2^40 (≈1.0995e12, ~12-13 decimal digits) — anything wider
+/// than 5 bytes gets silently truncated on the way back, resolving to a
+/// DIFFERENT `u64` than the one a test (or a future caller) provisioned
+/// into `Hss` under, which then looks like an "unknown subscriber" rather
+/// than an encoding bug. Caught this session when `amf::state_machine`'s
+/// own test suite picked a realistic-looking 15-digit IMSI that silently
+/// aliased to a different value here — see that module's `TEST_IMSI` doc.
 fn resolve_suci_to_imsi(suci: &midn_proto::nas5gs::Suci) -> Option<u64> {
     if suci.protection_scheme != 0 {
         return None;
